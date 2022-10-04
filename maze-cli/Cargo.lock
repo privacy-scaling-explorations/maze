@@ -2285,6 +2285,7 @@ dependencies = [
 name = "maze-cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap 4.0.9",
  "crossterm 0.22.1",
  "ecc",

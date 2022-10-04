@@ -1,3 +1,4 @@
+use anyhow::{Context, Error, Ok, Result};
 use clap::Parser;
 use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder};
@@ -56,7 +57,7 @@ use plonk_verifier::{
 };
 use rand::{rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use std::{io::Cursor, iter, rc::Rc};
+use std::{ffi::OsStr, io::Cursor, iter, path::PathBuf, rc::Rc};
 
 const LIMBS: usize = 4;
 const BITS: usize = 68;
@@ -467,15 +468,42 @@ pub struct Data<const N: usize> {
 
 #[derive(Parser)]
 struct Cli {
-    vk: std::path::PathBuf,
-    input_dir: std::path::PathBuf,
-    ptau: std::path::PathBuf,
+    vk: PathBuf,
+    input_dir: PathBuf,
+    ptau: PathBuf,
     count: usize,
 }
 
-// fn get_params() {
+fn get_params(path: PathBuf) -> Result<ParamsKZG<Bn256>> {
+    let ptau = OsStr::new("ptau");
+    let srs = OsStr::new("srs");
 
-// }
+    let params = match path.extension() {
+        Some(ext) => match ext {
+            ptau => Ok(Srs::<Bn256>::read(
+                &mut std::fs::File::open(path)
+                    .with_context(|| format!("Failed to read srs file"))?,
+                SrsFormat::SnarkJs,
+            )),
+            srs => Ok(Srs::<Bn256>::read(
+                &mut std::fs::File::open(path)
+                    .with_context(|| format!("Failed to read srs file"))?,
+                SrsFormat::Pse,
+            )),
+            _ => Err(Error::msg("Only .ptau or .srs files allowed for srs")),
+        },
+        None => Err(Error::msg("No file exists for srs")),
+    }
+    .and_then(|srs| {
+        let mut buf = Vec::new();
+        srs.write(&mut buf);
+        let params = ParamsKZG::<Bn256>::read(&mut std::io::Cursor::new(buf))
+            .with_context(|| "Error in reading srs to ParamsKzg")?;
+        Ok(params)
+    })?;
+
+    Ok(params)
+}
 
 fn main() {
     // (1) Read files into Testdata struct
@@ -485,6 +513,7 @@ fn main() {
     let args = Cli::parse();
 
     // reading vk, proofs, public_signals
+    println!("Reading input files");
     let vk = std::fs::read_to_string(&args.vk).unwrap();
     let mut proofs: Vec<String> = vec![];
     let mut public_signals: Vec<String> = vec![];
@@ -500,15 +529,10 @@ fn main() {
     });
 
     // reading srs
-    let srs = Srs::<Bn256>::read(
-        &mut std::fs::File::open(&args.ptau).expect("Couldn't open file at {path}"),
-        SrsFormat::SnarkJs,
-    );
-    let mut buf = Vec::new();
-    srs.write(&mut buf);
-    let params = ParamsKZG::<Bn256>::read(&mut std::io::Cursor::new(buf)).unwrap();
-    // let params = ParamsKZG::<Bn256>::setup(15, OsRng);
+    println!("Reading srs");
+    let params = get_params(args.ptau).unwrap();
 
+    println!("Parsing input values");
     let circom_vk: VerifyingKey<Bn256> = serde_json::from_str(vk.as_str()).unwrap();
     let public_signals = public_signals
         .iter()
@@ -520,6 +544,7 @@ fn main() {
         .collect_vec();
 
     // building circuit
+    println!("Building circuit");
     let circuit = Accumulation::new(params.clone(), circom_vk.clone(), public_signals, proofs);
 
     // mock proving circuit
@@ -527,10 +552,12 @@ fn main() {
     // mock_prover.assert_satisfied();
 
     // proving key
+    println!("Getting proving key");
     let proving_key = gen_pk(&params, &circuit);
     let verification_key = proving_key.get_vk();
 
     // bytecode generation
+    println!("Generating evm verifier bytecode");
     let bytecode = gen_aggregation_evm_verifier(
         &circom_vk,
         &params,
