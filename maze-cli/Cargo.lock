@@ -1799,6 +1799,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "halo2_kzg_srs"
+version = "0.1.0"
+source = "git+https://github.com/han0110/halo2-kzg-srs#ff65429d69db3bf5575a3f011da34932af7a0325"
+dependencies = [
+ "byteorder",
+ "halo2curves 0.2.1",
+ "num-bigint",
+ "rand_core",
+ "rayon",
+]
+
+[[package]]
 name = "halo2_proofs"
 version = "0.2.0"
 source = "git+https://github.com/han0110/halo2?branch=feature/configurable-instance-query#432d72f462ed47ccf5c93b1111afed14c95db52b"
@@ -2278,6 +2290,7 @@ dependencies = [
  "ecc",
  "ethereum-types",
  "foundry-evm",
+ "halo2_kzg_srs",
  "halo2_proofs",
  "halo2curves 0.2.1",
  "itertools",

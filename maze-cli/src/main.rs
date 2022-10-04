@@ -1,10 +1,14 @@
 use clap::Parser;
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
+use halo2_kzg_srs::{Srs, SrsFormat};
 use halo2_proofs::{
     circuit::{floor_planner::V1, Layouter, Value},
     dev::MockProver,
     plonk::{self, Circuit, ConstraintSystem},
-    poly::{commitment::ParamsProver, kzg::commitment::ParamsKZG},
+    poly::{
+        commitment::{Params, ParamsProver},
+        kzg::commitment::ParamsKZG,
+    },
 };
 use halo2_wrong_ecc::{
     self,
@@ -24,7 +28,7 @@ use plonk_verifier::{
     },
     pcs::{
         kzg::{
-            Bdfg21, Gwc19, Kzg, KzgAccumulator, KzgAs, KzgAsProvingKey, KzgAsVerifyingKey,
+            Bdfg21, Kzg, KzgAccumulator, KzgAs, KzgAsProvingKey, KzgAsVerifyingKey,
             KzgSuccinctVerifyingKey, LimbsEncoding,
         },
         AccumulationScheme, AccumulationSchemeProver,
@@ -187,12 +191,11 @@ struct Accumulation {
 
 impl Accumulation {
     pub fn new(
+        params: ParamsKZG<Bn256>,
         vk: VerifyingKey<Bn256>,
         public_signals: Vec<PublicSignals<Fr>>,
         proofs: Vec<Proof<Bn256>>,
     ) -> Self {
-        let params = ParamsKZG::<Bn256>::setup(2, ChaCha20Rng::from_seed(Default::default()));
-
         let protocol = compile(&vk);
         let proofs: Vec<Vec<u8>> = proofs.iter().map(|p| p.to_compressed_le()).collect();
 
@@ -338,6 +341,7 @@ pub struct Data<const N: usize> {
 struct Cli {
     vk: std::path::PathBuf,
     input_dir: std::path::PathBuf,
+    ptau: std::path::PathBuf,
     count: usize,
 }
 
@@ -348,6 +352,7 @@ fn main() {
     // (4)
     let args = Cli::parse();
 
+    // reading vk, proofs, public_signals
     let vk = std::fs::read_to_string(&args.vk).unwrap();
     let mut proofs: Vec<String> = vec![];
     let mut public_signals: Vec<String> = vec![];
@@ -362,6 +367,15 @@ fn main() {
         public_signals.push(std::fs::read_to_string(public).unwrap());
     });
 
+    // reading srs
+    let srs = Srs::<Bn256>::read(
+        &mut std::fs::File::open(&args.ptau).expect("Couldn't open file at {path}"),
+        SrsFormat::SnarkJs,
+    );
+    let mut buf = Vec::new();
+    srs.write(&mut buf);
+    let params = ParamsKZG::<Bn256>::read(&mut std::io::Cursor::new(buf)).unwrap();
+
     let vk: VerifyingKey<Bn256> = serde_json::from_str(vk.as_str()).unwrap();
     let public_signals = public_signals
         .iter()
@@ -373,10 +387,13 @@ fn main() {
         .collect_vec();
 
     // building circuit
-    let circuit = Accumulation::new(vk, public_signals, proofs);
+    let circuit = Accumulation::new(params, vk, public_signals, proofs);
 
-    let mock_prover = MockProver::run(21, &circuit, vec![circuit.instances.clone()]).unwrap();
-    mock_prover.assert_satisfied();
+    // mock proving circuit
+    // let mock_prover = MockProver::run(21, &circuit, vec![circuit.instances.clone()]).unwrap();
+    // mock_prover.assert_satisfied();
+
+    
 }
 
 // fn main() {
