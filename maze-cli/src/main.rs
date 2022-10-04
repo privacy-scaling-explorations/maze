@@ -1,4 +1,4 @@
-use anyhow::{Context, Error, Ok, Result};
+use anyhow::Context;
 use clap::Parser;
 use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder};
@@ -57,7 +57,7 @@ use plonk_verifier::{
 };
 use rand::{rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use std::{ffi::OsStr, io::Cursor, iter, path::PathBuf, rc::Rc};
+use std::{ffi::OsStr, fmt::format, io::Cursor, iter, path::PathBuf, rc::Rc};
 
 const LIMBS: usize = 4;
 const BITS: usize = 68;
@@ -210,6 +210,7 @@ impl Accumulation {
         public_signals: Vec<PublicSignals<Fr>>,
         proofs: Vec<Proof<Bn256>>,
     ) -> Self {
+        print!("Building circuit!");
         let protocol = compile(&vk);
         let proofs: Vec<Vec<u8>> = proofs.iter().map(|p| p.to_compressed_le()).collect();
 
@@ -405,6 +406,7 @@ fn gen_proof<
 }
 
 fn gen_pk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> ProvingKey<G1Affine> {
+    print!("Generating proving key!");
     let vk = keygen_vk(params, circuit).unwrap();
     keygen_pk(params, vk, circuit).unwrap()
 }
@@ -416,6 +418,7 @@ fn gen_aggregation_evm_verifier(
     num_instance: Vec<usize>,
     accumulator_indices: Vec<(usize, usize)>,
 ) -> Vec<u8> {
+    println!("Generating evm verifier bytecode!");
     let svk = vk.svk().into();
     let dk = vk.dk().into();
 
@@ -466,33 +469,24 @@ pub struct Data<const N: usize> {
     pub public_signals: [&'static str; N],
 }
 
-#[derive(Parser)]
-struct Cli {
-    vk: PathBuf,
-    input_dir: PathBuf,
-    ptau: PathBuf,
-    count: usize,
-}
-
-fn get_params(path: PathBuf) -> Result<ParamsKZG<Bn256>> {
-    let ptau = OsStr::new("ptau");
-    let srs = OsStr::new("srs");
-
+fn prepare_params(path: PathBuf) -> anyhow::Result<ParamsKZG<Bn256>> {
     let params = match path.extension() {
-        Some(ext) => match ext {
-            ptau => Ok(Srs::<Bn256>::read(
+        Some(ext) => match ext.to_str().unwrap() {
+            "ptau" => Ok(Srs::<Bn256>::read(
                 &mut std::fs::File::open(path)
                     .with_context(|| format!("Failed to read srs file"))?,
                 SrsFormat::SnarkJs,
             )),
-            srs => Ok(Srs::<Bn256>::read(
+            "srs" => Ok(Srs::<Bn256>::read(
                 &mut std::fs::File::open(path)
                     .with_context(|| format!("Failed to read srs file"))?,
                 SrsFormat::Pse,
             )),
-            _ => Err(Error::msg("Only .ptau or .srs files allowed for srs")),
+            _ => Err(anyhow::Error::msg(
+                "Only .ptau or .srs files allowed for srs",
+            )),
         },
-        None => Err(Error::msg("No file exists for srs")),
+        None => Err(anyhow::Error::msg("No file exists for srs")),
     }
     .and_then(|srs| {
         let mut buf = Vec::new();
@@ -505,54 +499,91 @@ fn get_params(path: PathBuf) -> Result<ParamsKZG<Bn256>> {
     Ok(params)
 }
 
+fn create_and_save_srs(dir_path: PathBuf, k: usize) -> anyhow::Result<ParamsKZG<Bn256>> {
+    println!("Generating new srs for k:{}", k);
+    std::fs::create_dir_all(dir_path.clone()).with_context(|| "Unable to locate directory")?;
+
+    let params = ParamsKZG::<Bn256>::setup(k as u32, OsRng);
+    let mut file_path = dir_path;
+    file_path.extend(vec![format!("k-{}.srs", k)]);
+    let mut file = std::fs::File::create(file_path).with_context(|| "Unable to create new file")?;
+    params.write(&mut file)?;
+
+    Ok(params)
+}
+
+fn prepare_circom_vk(path: PathBuf) -> anyhow::Result<VerifyingKey<Bn256>> {
+    print!("Reading verification key!");
+    let vk =
+        std::fs::read_to_string(&path).with_context(|| "Unable to find verification key file")?;
+    let vk: VerifyingKey<Bn256> =
+        serde_json::from_str(vk.as_str()).with_context(|| "Malformed verification key")?;
+    Ok(vk)
+}
+
+fn prepare_circom_inputs(
+    path: PathBuf,
+    count: usize,
+) -> anyhow::Result<(Vec<Proof<Bn256>>, Vec<PublicSignals<Fr>>)> {
+    let mut proofs: Vec<Proof<Bn256>> = vec![];
+    let mut public_signals: Vec<PublicSignals<Fr>> = vec![];
+
+    for i in 0..count {
+        let mut proof = path.clone();
+        proof.extend(vec![format!("proof{}.json", i + 1)]);
+        let proof = std::fs::read_to_string(proof)
+            .with_context(|| format!("Unable to read proof{}.json", i + 1))?;
+        let proof = serde_json::from_str::<Proof<Bn256>>(&proof)
+            .with_context(|| format!("Malformed proof{}.json", i + 1))?;
+        proofs.push(proof);
+
+        let mut public = path.clone();
+        public.extend(vec![format!("public{}.json", i + 1)]);
+        let public = std::fs::read_to_string(public)
+            .with_context(|| format!("Unable to read public{}.json", i + 1))?;
+        let public = serde_json::from_str::<PublicSignals<Fr>>(&public)
+            .with_context(|| format!("Malformed public{}.json", i + 1))?;
+        public_signals.push(public);
+    }
+
+    Ok((proofs, public_signals))
+}
+
+#[derive(Parser)]
+struct Cli {
+    vk: PathBuf,
+    input_dir: PathBuf,
+    ptau: PathBuf,
+    count: usize,
+}
+
 fn main() {
-    // (1) Read files into Testdata struct
-    // (2) Check whether it works
-    // (3) Export solidity verifier bytecode
-    // (4)
     let args = Cli::parse();
 
-    // reading vk, proofs, public_signals
-    println!("Reading input files");
-    let vk = std::fs::read_to_string(&args.vk).unwrap();
-    let mut proofs: Vec<String> = vec![];
-    let mut public_signals: Vec<String> = vec![];
+    create_and_save_srs("./testdata".into(), 21).unwrap();
 
-    (0..args.count).for_each(|i| {
-        let mut proof = args.input_dir.clone();
-        proof.extend(vec![format!("proof{}.json", i + 1)]);
-        proofs.push(std::fs::read_to_string(proof).unwrap());
+    let params = match prepare_params(args.ptau.clone()) {
+        Ok(params) => params,
+        Err(e) => {
+            eprintln!("{}", e);
+            println!("Preparing params. Note this must not be used in production");
+            ParamsKZG::<Bn256>::setup(2, OsRng)
+        }
+    };
 
-        let mut public = args.input_dir.clone();
-        public.extend(vec![format!("public{}.json", i + 1)]);
-        public_signals.push(std::fs::read_to_string(public).unwrap());
-    });
-
-    // reading srs
-    println!("Reading srs");
-    let params = get_params(args.ptau).unwrap();
-
-    println!("Parsing input values");
-    let circom_vk: VerifyingKey<Bn256> = serde_json::from_str(vk.as_str()).unwrap();
-    let public_signals = public_signals
-        .iter()
-        .map(|public_signals| serde_json::from_str::<PublicSignals<Fr>>(public_signals).unwrap())
-        .collect_vec();
-    let proofs = proofs
-        .iter()
-        .map(|proof| serde_json::from_str::<Proof<Bn256>>(proof).unwrap())
-        .collect_vec();
+    let circom_vk = prepare_circom_vk(args.vk.clone()).unwrap();
+    let (proofs, public_signals) =
+        prepare_circom_inputs(args.input_dir.clone(), args.count).unwrap();
 
     // building circuit
-    println!("Building circuit");
     let circuit = Accumulation::new(params.clone(), circom_vk.clone(), public_signals, proofs);
 
     // mock proving circuit
+    // println!("Running mock prover");
     // let mock_prover = MockProver::run(21, &circuit, vec![circuit.instances.clone()]).unwrap();
     // mock_prover.assert_satisfied();
 
     // proving key
-    println!("Getting proving key");
     let proving_key = gen_pk(&params, &circuit);
     let verification_key = proving_key.get_vk();
 
@@ -565,6 +596,7 @@ fn main() {
         Accumulation::num_instance(),
         Accumulation::accumulator_indices(),
     );
+    print!("bytecode generated {:?}", bytecode);
 
     //
 }
