@@ -1,14 +1,25 @@
 use clap::Parser;
+use ethereum_types::Address;
+use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
 use halo2_kzg_srs::{Srs, SrsFormat};
 use halo2_proofs::{
     circuit::{floor_planner::V1, Layouter, Value},
     dev::MockProver,
-    plonk::{self, Circuit, ConstraintSystem},
+    plonk::{
+        self, create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ConstraintSystem,
+        ProvingKey, VerifyingKey as PlonkVerifyingKey,
+    },
     poly::{
         commitment::{Params, ParamsProver},
-        kzg::commitment::ParamsKZG,
+        kzg::{
+            commitment::{KZGCommitmentScheme, ParamsKZG},
+            multiopen::{ProverGWC, VerifierGWC},
+            strategy::AccumulatorStrategy,
+        },
+        VerificationStrategy,
     },
+    transcript::{EncodedChallenge, TranscriptReadBuffer, TranscriptWriterBuffer},
 };
 use halo2_wrong_ecc::{
     self,
@@ -23,6 +34,7 @@ use halo2_wrong_transcript::NativeRepresentation;
 use itertools::Itertools;
 use plonk_verifier::{
     loader::{
+        evm::{encode_calldata, EvmLoader},
         halo2::{self},
         native::NativeLoader,
     },
@@ -36,14 +48,15 @@ use plonk_verifier::{
     system::{
         self,
         circom::{compile, Proof, PublicSignals, VerifyingKey},
+        halo2::{compile as compile_halo2, transcript::evm::EvmTranscript, Config},
     },
     util::arithmetic::{fe_to_limbs, CurveAffine, FieldExt},
     verifier::{self, PlonkVerifier},
     Protocol,
 };
-use rand::SeedableRng;
+use rand::{rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use std::{iter, rc::Rc};
+use std::{io::Cursor, iter, rc::Rc};
 
 const LIMBS: usize = 4;
 const BITS: usize = 68;
@@ -254,6 +267,14 @@ impl Accumulation {
         }
     }
 
+    pub fn accumulator_indices() -> Vec<(usize, usize)> {
+        (0..4 * LIMBS).map(|idx| (0, idx)).collect()
+    }
+
+    pub fn num_instance() -> Vec<usize> {
+        vec![4 * LIMBS]
+    }
+
     pub fn as_proof(&self) -> Value<&[u8]> {
         self.as_proof.as_ref().map(Vec::as_slice)
     }
@@ -331,6 +352,113 @@ impl Circuit<Fr> for Accumulation {
     }
 }
 
+fn gen_proof<
+    C: Circuit<Fr>,
+    E: EncodedChallenge<G1Affine>,
+    TR: TranscriptReadBuffer<Cursor<Vec<u8>>, G1Affine, E>,
+    TW: TranscriptWriterBuffer<Vec<u8>, G1Affine, E>,
+>(
+    params: &ParamsKZG<Bn256>,
+    pk: &ProvingKey<G1Affine>,
+    circuit: C,
+    instances: Vec<Vec<Fr>>,
+) -> Vec<u8> {
+    MockProver::run(params.k(), &circuit, instances.clone())
+        .unwrap()
+        .assert_satisfied();
+
+    let instances = instances
+        .iter()
+        .map(|instances| instances.as_slice())
+        .collect_vec();
+    let proof = {
+        let mut transcript = TW::init(Vec::new());
+        create_proof::<KZGCommitmentScheme<Bn256>, ProverGWC<_>, _, _, TW, _>(
+            params,
+            pk,
+            &[circuit],
+            &[instances.as_slice()],
+            OsRng,
+            &mut transcript,
+        )
+        .unwrap();
+        transcript.finalize()
+    };
+
+    let accept = {
+        let mut transcript = TR::init(Cursor::new(proof.clone()));
+        VerificationStrategy::<_, VerifierGWC<_>>::finalize(
+            verify_proof::<_, VerifierGWC<_>, _, TR, _>(
+                params.verifier_params(),
+                pk.get_vk(),
+                AccumulatorStrategy::new(params.verifier_params()),
+                &[instances.as_slice()],
+                &mut transcript,
+            )
+            .unwrap(),
+        )
+    };
+    assert!(accept);
+
+    proof
+}
+
+fn gen_pk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> ProvingKey<G1Affine> {
+    let vk = keygen_vk(params, circuit).unwrap();
+    keygen_pk(params, vk, circuit).unwrap()
+}
+
+fn gen_aggregation_evm_verifier(
+    vk: &VerifyingKey<Bn256>,
+    params: &ParamsKZG<Bn256>,
+    plonk_vk: &PlonkVerifyingKey<G1Affine>,
+    num_instance: Vec<usize>,
+    accumulator_indices: Vec<(usize, usize)>,
+) -> Vec<u8> {
+    let svk = vk.svk().into();
+    let dk = vk.dk().into();
+
+    let protocol = compile_halo2(
+        params,
+        plonk_vk,
+        Config::kzg()
+            .with_num_instance(num_instance.clone())
+            .with_accumulator_indices(accumulator_indices),
+    );
+
+    let loader = EvmLoader::new::<Fq, Fr>();
+    let mut transcript = EvmTranscript::<_, Rc<EvmLoader>, _, _>::new(loader.clone());
+
+    let instances = transcript.load_instances(num_instance);
+    let proof = Plonk::read_proof(&svk, &protocol, &instances, &mut transcript).unwrap();
+    Plonk::verify(&svk, &dk, &protocol, &instances, &proof).unwrap();
+
+    loader.deployment_code()
+}
+
+fn evm_verify(deployment_code: Vec<u8>, instances: Vec<Vec<Fr>>, proof: Vec<u8>) {
+    let calldata = encode_calldata(&instances, &proof);
+    let success = {
+        let mut evm = ExecutorBuilder::default()
+            .with_gas_limit(u64::MAX.into())
+            .build(Backend::new(MultiFork::new().0, None));
+
+        let caller = Address::from_low_u64_be(0xfe);
+        let verifier = evm
+            .deploy(caller, deployment_code.into(), 0.into(), None)
+            .unwrap()
+            .address;
+        let result = evm
+            .call_raw(caller, verifier, calldata.into(), 0.into())
+            .unwrap();
+
+        dbg!(result.gas_used);
+
+        !result.reverted
+    };
+    assert!(success);
+}
+
 pub struct Data<const N: usize> {
     pub vk: &'static str,
     pub proofs: [&'static str; N],
@@ -344,6 +472,10 @@ struct Cli {
     ptau: std::path::PathBuf,
     count: usize,
 }
+
+// fn get_params() {
+
+// }
 
 fn main() {
     // (1) Read files into Testdata struct
@@ -375,8 +507,9 @@ fn main() {
     let mut buf = Vec::new();
     srs.write(&mut buf);
     let params = ParamsKZG::<Bn256>::read(&mut std::io::Cursor::new(buf)).unwrap();
+    // let params = ParamsKZG::<Bn256>::setup(15, OsRng);
 
-    let vk: VerifyingKey<Bn256> = serde_json::from_str(vk.as_str()).unwrap();
+    let circom_vk: VerifyingKey<Bn256> = serde_json::from_str(vk.as_str()).unwrap();
     let public_signals = public_signals
         .iter()
         .map(|public_signals| serde_json::from_str::<PublicSignals<Fr>>(public_signals).unwrap())
@@ -387,13 +520,26 @@ fn main() {
         .collect_vec();
 
     // building circuit
-    let circuit = Accumulation::new(params, vk, public_signals, proofs);
+    let circuit = Accumulation::new(params.clone(), circom_vk.clone(), public_signals, proofs);
 
     // mock proving circuit
     // let mock_prover = MockProver::run(21, &circuit, vec![circuit.instances.clone()]).unwrap();
     // mock_prover.assert_satisfied();
 
-    
+    // proving key
+    let proving_key = gen_pk(&params, &circuit);
+    let verification_key = proving_key.get_vk();
+
+    // bytecode generation
+    let bytecode = gen_aggregation_evm_verifier(
+        &circom_vk,
+        &params,
+        verification_key,
+        Accumulation::num_instance(),
+        Accumulation::accumulator_indices(),
+    );
+
+    //
 }
 
 // fn main() {
