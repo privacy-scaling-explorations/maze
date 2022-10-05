@@ -1,7 +1,6 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-
 use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder, RawCallResult};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
@@ -57,15 +56,11 @@ use plonk_verifier::{
     verifier::{self, PlonkVerifier},
     Protocol,
 };
-use rand::{
-    rngs::{mock, OsRng},
-    SeedableRng,
-};
+use rand::{rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::{
     io::{Cursor, Write},
     iter,
-    os::unix::process,
     path::PathBuf,
     rc::Rc,
     time::Instant,
@@ -597,7 +592,7 @@ struct Cli {
 enum Commands {
     /// Setup mock
     MockSetup {
-        vk: PathBuf,
+        verification_key: PathBuf,
         input_dir: PathBuf,
         proof_count: usize,
 
@@ -607,7 +602,7 @@ enum Commands {
 
     /// Generates EVM verifier
     GenEvmVerifier {
-        vk: PathBuf,
+        verification_key: PathBuf,
         input_dir: PathBuf,
         params: PathBuf,
         proof_count: usize,
@@ -616,7 +611,7 @@ enum Commands {
 
     /// Create proof
     CreateProof {
-        vk: PathBuf,
+        verification_key: PathBuf,
         input_dir: PathBuf,
         params: PathBuf,
         proof_count: usize,
@@ -632,7 +627,7 @@ fn report_elapsed(now: Instant) {
         "{}",
         format!("Took {} seconds", now.elapsed().as_secs())
             .blue()
-            .italic()
+            .bold()
     );
 }
 
@@ -641,7 +636,7 @@ fn main() {
 
     match cli.command {
         Some(Commands::GenEvmVerifier {
-            vk,
+            verification_key,
             input_dir,
             params,
             proof_count,
@@ -649,7 +644,7 @@ fn main() {
         }) => {
             println!("{}", "Reading parameters for the circuit".white().bold());
             let now = Instant::now();
-            let params = match prepare_params(params.clone()) {
+            let params = match prepare_params(params) {
                 Ok(params) => params,
                 Err(e) => {
                     println!("{}", e.to_string().red());
@@ -660,7 +655,7 @@ fn main() {
             println!();
 
             println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = prepare_circom_vk(vk.clone()).unwrap();
+            let circom_vk = prepare_circom_vk(verification_key).unwrap();
             println!();
 
             println!(
@@ -669,8 +664,7 @@ fn main() {
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) =
-                prepare_circom_inputs(input_dir.clone(), proof_count).unwrap();
+            let (proofs, public_signals) = prepare_circom_inputs(input_dir, proof_count).unwrap();
             println!();
 
             println!("{}", "Building aggregation circuit".white().bold());
@@ -747,9 +741,10 @@ fn main() {
                 }
             }
             report_elapsed(now);
+            println!("{}", "Success".green());
         }
         Some(Commands::MockSetup {
-            vk,
+            verification_key,
             input_dir,
             proof_count,
             k,
@@ -757,7 +752,7 @@ fn main() {
             let mock_params = gen_srs(1);
 
             println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = prepare_circom_vk(vk.clone()).unwrap();
+            let circom_vk = prepare_circom_vk(verification_key).unwrap();
             println!();
 
             println!(
@@ -796,9 +791,10 @@ fn main() {
                 }
             }
             report_elapsed(now);
+            println!("{}", "Success".green());
         }
         Some(Commands::CreateProof {
-            vk,
+            verification_key,
             input_dir,
             params,
             proof_count,
@@ -806,7 +802,7 @@ fn main() {
         }) => {
             println!("{}", "Reading parameters for the circuit".white().bold());
             let now = Instant::now();
-            let params = match prepare_params(params.clone()) {
+            let params = match prepare_params(params) {
                 Ok(params) => params,
                 Err(e) => {
                     println!("{}", e.to_string().red());
@@ -817,7 +813,7 @@ fn main() {
             println!();
 
             println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = prepare_circom_vk(vk.clone()).unwrap();
+            let circom_vk = prepare_circom_vk(verification_key).unwrap();
             println!();
 
             println!(
@@ -826,8 +822,7 @@ fn main() {
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) =
-                prepare_circom_inputs(input_dir.clone(), proof_count).unwrap();
+            let (proofs, public_signals) = prepare_circom_inputs(input_dir, proof_count).unwrap();
             println!();
 
             println!("{}", "Building aggregation circuit".white().bold());
@@ -837,6 +832,7 @@ fn main() {
 
             // Make sure output_dir is accessible and can create
             // necessary files for storing the proof.
+            // This is for precaution.
             match std::fs::create_dir_all(output_dir.clone())
                 .with_context(|| {
                     format!(
@@ -845,9 +841,9 @@ fn main() {
                     )
                 })
                 .and_then(|_| {
-                    for i in ["", "instances", "evm-calldata"] {
+                    for i in ["proof", "evm-calldata"] {
                         let mut file_path = output_dir.clone();
-                        file_path.extend(vec![format!("halo2-agg-proof{}.txt", i)]);
+                        file_path.extend(vec![format!("halo2-agg-{}.txt", i)]);
                         std::fs::File::create(file_path.clone()).with_context(|| {
                             format!(
                                 "Failed to create new file at {}",
@@ -864,10 +860,14 @@ fn main() {
                 }
             }
 
-            // Generate proof
-            println!("{}", "Generating proof".white().bold());
+            println!("{}", "Generating proving key".white().bold());
             let now = Instant::now();
             let pk = gen_pk(&params, &circuit);
+            report_elapsed(now);
+            println!();
+
+            println!("{}", "Generating proof".white().bold());
+            let now = Instant::now();
             let proof = gen_proof::<
                 _,
                 _,
@@ -877,15 +877,15 @@ fn main() {
             report_elapsed(now);
 
             for i in [
-                ("", proof.clone()),
+                ("proof", proof.clone()),
                 (
                     "evm-calldata",
                     encode_calldata(&circuit.instances(), &proof),
                 ),
             ] {
                 let mut file_path = output_dir.clone();
-                file_path.extend(vec![format!("halo2-agg-proof{}.txt", i.0)]);
-                match std::fs::File::open(file_path.clone())
+                file_path.extend(vec![format!("halo2-agg-{}.txt", i.0)]);
+                match std::fs::File::create(file_path.clone())
                     .with_context(|| {
                         format!(
                             "Failed to open file at {}",
@@ -936,7 +936,9 @@ fn main() {
                 "Warning! Please don't use generated Params in production.".yellow()
             );
             match create_and_save_srs(output_dir, k) {
-                Ok(_) => {}
+                Ok(_) => {
+                    println!("{}", "Success".green());
+                }
                 Err(e) => {
                     println!("{}", e.to_string().red());
                     std::process::exit(1);
@@ -944,8 +946,10 @@ fn main() {
             }
         }
         _ => {
+            println!("{}", "Invalid command".red());
             std::process::exit(1);
         }
     };
+
     std::process::exit(0);
 }

@@ -1,7 +1,12 @@
 [package]
 name = "maze-cli"
 version = "0.1.0"
+authors = ["Janmajaya Mall <janmajayamall@protonmail.com>"]
 edition = "2021"
+license = "MIT"
+description = "CLI tool to aggregate circom-plonk proofs"
+readme = "README.md"
+keywords = ["aggregation", "plonk", "halo2", "circom"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
