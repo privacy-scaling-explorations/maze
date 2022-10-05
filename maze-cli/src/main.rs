@@ -1,5 +1,7 @@
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use colored::Colorize;
+
 use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
@@ -55,9 +57,12 @@ use plonk_verifier::{
     verifier::{self, PlonkVerifier},
     Protocol,
 };
-use rand::{rngs::OsRng, SeedableRng};
+use rand::{
+    rngs::{mock, OsRng},
+    SeedableRng,
+};
 use rand_chacha::ChaCha20Rng;
-use std::{ffi::OsStr, fmt::format, io::Cursor, iter, path::PathBuf, rc::Rc};
+use std::{ffi::OsStr, fmt::format, io::Cursor, iter, path::PathBuf, rc::Rc, time::Instant};
 
 const LIMBS: usize = 4;
 const BITS: usize = 68;
@@ -210,7 +215,6 @@ impl Accumulation {
         public_signals: Vec<PublicSignals<Fr>>,
         proofs: Vec<Proof<Bn256>>,
     ) -> Self {
-        print!("Building circuit!");
         let protocol = compile(&vk);
         let proofs: Vec<Vec<u8>> = proofs.iter().map(|p| p.to_compressed_le()).collect();
 
@@ -473,49 +477,67 @@ fn prepare_params(path: PathBuf) -> anyhow::Result<ParamsKZG<Bn256>> {
     let params = match path.extension() {
         Some(ext) => match ext.to_str().unwrap() {
             "ptau" => Ok(Srs::<Bn256>::read(
-                &mut std::fs::File::open(path)
-                    .with_context(|| format!("Failed to read srs file"))?,
+                &mut std::fs::File::open(path.clone()).with_context(|| {
+                    format!("Failed to read .ptau file {}", path.to_str().unwrap())
+                })?,
                 SrsFormat::SnarkJs,
             )),
             "srs" => Ok(Srs::<Bn256>::read(
-                &mut std::fs::File::open(path)
-                    .with_context(|| format!("Failed to read srs file"))?,
+                &mut std::fs::File::open(path.clone()).with_context(|| {
+                    format!("Failed to read .srs file {}", path.to_str().unwrap())
+                })?,
                 SrsFormat::Pse,
             )),
             _ => Err(anyhow::Error::msg(
-                "Only .ptau or .srs files allowed for srs",
+                "Invalid file extension. Only .ptau or .srs files allowed for params",
             )),
         },
-        None => Err(anyhow::Error::msg("No file exists for srs")),
+        None => Err(anyhow::Error::msg("Invalid file path for params")),
     }
     .and_then(|srs| {
         let mut buf = Vec::new();
         srs.write(&mut buf);
         let params = ParamsKZG::<Bn256>::read(&mut std::io::Cursor::new(buf))
-            .with_context(|| "Error in reading srs to ParamsKzg")?;
+            .with_context(|| "Malformed params file")?;
         Ok(params)
     })?;
 
     Ok(params)
 }
 
-fn create_and_save_srs(dir_path: PathBuf, k: usize) -> anyhow::Result<ParamsKZG<Bn256>> {
-    println!("Generating new srs for k:{}", k);
-    std::fs::create_dir_all(dir_path.clone()).with_context(|| "Unable to locate directory")?;
+fn gen_srs(k: u32) -> ParamsKZG<Bn256> {
+    ParamsKZG::<Bn256>::setup(k, OsRng)
+}
 
-    let params = ParamsKZG::<Bn256>::setup(k as u32, OsRng);
+fn create_and_save_srs(dir_path: PathBuf, k: usize) -> anyhow::Result<ParamsKZG<Bn256>> {
+    std::fs::create_dir_all(dir_path.clone()).with_context(|| {
+        format!(
+            "Failed to locate directory at {}",
+            dir_path.to_str().unwrap()
+        )
+    })?;
+
+    let params = gen_srs(k as u32);
     let mut file_path = dir_path;
     file_path.extend(vec![format!("k-{}.srs", k)]);
-    let mut file = std::fs::File::create(file_path).with_context(|| "Unable to create new file")?;
+    let mut file = std::fs::File::create(file_path.clone()).with_context(|| {
+        format!(
+            "Failed to create new file at {}",
+            file_path.to_str().unwrap()
+        )
+    })?;
     params.write(&mut file)?;
 
     Ok(params)
 }
 
 fn prepare_circom_vk(path: PathBuf) -> anyhow::Result<VerifyingKey<Bn256>> {
-    print!("Reading verification key!");
-    let vk =
-        std::fs::read_to_string(&path).with_context(|| "Unable to find verification key file")?;
+    let vk = std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "Failed to locate verification key at {}",
+            path.to_str().unwrap()
+        )
+    })?;
     let vk: VerifyingKey<Bn256> =
         serde_json::from_str(vk.as_str()).with_context(|| "Malformed verification key")?;
     Ok(vk)
@@ -531,16 +553,26 @@ fn prepare_circom_inputs(
     for i in 0..count {
         let mut proof = path.clone();
         proof.extend(vec![format!("proof{}.json", i + 1)]);
-        let proof = std::fs::read_to_string(proof)
-            .with_context(|| format!("Unable to read proof{}.json", i + 1))?;
+        let proof = std::fs::read_to_string(proof.clone()).with_context(|| {
+            format!(
+                "Failed to locate proof{}.json at {}",
+                i + 1,
+                proof.to_str().unwrap()
+            )
+        })?;
         let proof = serde_json::from_str::<Proof<Bn256>>(&proof)
             .with_context(|| format!("Malformed proof{}.json", i + 1))?;
         proofs.push(proof);
 
         let mut public = path.clone();
         public.extend(vec![format!("public{}.json", i + 1)]);
-        let public = std::fs::read_to_string(public)
-            .with_context(|| format!("Unable to read public{}.json", i + 1))?;
+        let public = std::fs::read_to_string(public.clone()).with_context(|| {
+            format!(
+                "Failed to locate public{}.json at {}",
+                i + 1,
+                public.to_str().unwrap()
+            )
+        })?;
         let public = serde_json::from_str::<PublicSignals<Fr>>(&public)
             .with_context(|| format!("Malformed public{}.json", i + 1))?;
         public_signals.push(public);
@@ -550,79 +582,170 @@ fn prepare_circom_inputs(
 }
 
 #[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+#[command(next_line_help = true)]
 struct Cli {
-    vk: PathBuf,
-    input_dir: PathBuf,
-    ptau: PathBuf,
-    count: usize,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Setup mock
+    MockSetup {
+        vk: PathBuf,
+        input_dir: PathBuf,
+        proof_count: usize,
+
+        #[arg(default_value_t = 21)]
+        k: usize,
+    },
+
+    /// Setup aggregation
+    Setup {
+        vk: PathBuf,
+        input_dir: PathBuf,
+        params: PathBuf,
+        proof_count: usize,
+    },
+
+    /// Create SRS
+    CreateSrs { k: usize, output_dir: PathBuf },
+}
+
+fn report_elapsed(now: Instant) {
+    println!(
+        "{}",
+        format!("Took {} seconds", now.elapsed().as_secs())
+            .yellow()
+            .italic()
+    );
 }
 
 fn main() {
-    let args = Cli::parse();
+    let cli = Cli::parse();
 
-    create_and_save_srs("./testdata".into(), 21).unwrap();
+    match cli.command {
+        Some(Commands::Setup {
+            vk,
+            input_dir,
+            params,
+            proof_count,
+        }) => {
+            println!("{}", "Reading parameters for the circuit".white().bold());
+            let now = Instant::now();
+            let params = match prepare_params(params.clone()) {
+                Ok(params) => params,
+                Err(e) => {
+                    println!("{}", e.to_string().red());
+                    std::process::exit(1);
+                }
+            };
+            report_elapsed(now);
 
-    let params = match prepare_params(args.ptau.clone()) {
-        Ok(params) => params,
-        Err(e) => {
-            eprintln!("{}", e);
-            println!("Preparing params. Note this must not be used in production");
-            ParamsKZG::<Bn256>::setup(2, OsRng)
+            println!("{}", "Reading circom-plonk verification key".white().bold());
+            let circom_vk = prepare_circom_vk(vk.clone()).unwrap();
+
+            println!(
+                "{}",
+                "Reading circom-plonk proofs and public signals"
+                    .white()
+                    .bold()
+            );
+            let (proofs, public_signals) =
+                prepare_circom_inputs(input_dir.clone(), proof_count).unwrap();
+
+            println!("{}", "Building aggregation circuit".white().bold());
+            let circuit =
+                Accumulation::new(params.clone(), circom_vk.clone(), public_signals, proofs);
+
+            // mock proving circuit
+            println!(
+                "{}",
+                "Running mock prover for aggregation circuit".white().bold()
+            );
+            let now = Instant::now();
+            match MockProver::run(3, &circuit, vec![circuit.instances.clone()])
+                .with_context(|| "Mock prover failed")
+            {
+                Ok(mock_prover) => match mock_prover.verify() {
+                    Ok(_) => {}
+                    Err(errs) => {
+                        println!("{}", "Mock prover failed with errors:".red());
+                        errs.iter()
+                            .for_each(|e| println!("{}", e.to_string().red()));
+                    }
+                },
+                Err(e) => {
+                    println!("{}", e.to_string().red());
+                }
+            }
+            report_elapsed(now);
+
+            // proving key
+            let proving_key = gen_pk(&params, &circuit);
+            let verification_key = proving_key.get_vk();
+
+            println!("{}", "Generating evm verifier".white().bold());
+            let now = Instant::now();
+            let bytecode = gen_aggregation_evm_verifier(
+                &circom_vk,
+                &params,
+                verification_key,
+                Accumulation::num_instance(),
+                Accumulation::accumulator_indices(),
+            );
+            report_elapsed(now);
         }
+        Some(Commands::MockSetup {
+            vk,
+            input_dir,
+            proof_count,
+            k,
+        }) => {
+            let mock_params = gen_srs(1);
+
+            println!("{}", "Reading circom-plonk verification key".white().bold());
+            let circom_vk = prepare_circom_vk(vk.clone()).unwrap();
+
+            println!(
+                "{}",
+                "Reading circom-plonk proofs and public signals"
+                    .white()
+                    .bold()
+            );
+            let (proofs, public_signals) =
+                prepare_circom_inputs(input_dir.clone(), proof_count).unwrap();
+
+            println!("{}", "Building aggregation circuit".white().bold());
+            let circuit = Accumulation::new(mock_params, circom_vk.clone(), public_signals, proofs);
+
+            // mock proving circuit
+            println!(
+                "{}",
+                "Running mock prover for aggregation circuit".white().bold()
+            );
+            let now = Instant::now();
+            match MockProver::run(k as u32, &circuit, vec![circuit.instances.clone()])
+                .with_context(|| "Mock prover failed")
+            {
+                Ok(mock_prover) => match mock_prover.verify() {
+                    Ok(_) => {}
+                    Err(errs) => {
+                        println!("{}", "Mock prover failed with errors:".red());
+                        errs.iter()
+                            .for_each(|e| println!("{}", e.to_string().red()));
+                    }
+                },
+                Err(e) => {
+                    println!("{}", e.to_string().red());
+                }
+            }
+            report_elapsed(now);
+        }
+        Some(Commands::CreateSrs { k, output_dir }) => {
+            create_and_save_srs(output_dir, k).unwrap();
+        }
+        _ => {}
     };
-
-    let circom_vk = prepare_circom_vk(args.vk.clone()).unwrap();
-    let (proofs, public_signals) =
-        prepare_circom_inputs(args.input_dir.clone(), args.count).unwrap();
-
-    // building circuit
-    let circuit = Accumulation::new(params.clone(), circom_vk.clone(), public_signals, proofs);
-
-    // mock proving circuit
-    // println!("Running mock prover");
-    // let mock_prover = MockProver::run(21, &circuit, vec![circuit.instances.clone()]).unwrap();
-    // mock_prover.assert_satisfied();
-
-    // proving key
-    let proving_key = gen_pk(&params, &circuit);
-    let verification_key = proving_key.get_vk();
-
-    // bytecode generation
-    println!("Generating evm verifier bytecode");
-    let bytecode = gen_aggregation_evm_verifier(
-        &circom_vk,
-        &params,
-        verification_key,
-        Accumulation::num_instance(),
-        Accumulation::accumulator_indices(),
-    );
-    print!("bytecode generated {:?}", bytecode);
-
-    //
 }
-
-// fn main() {
-//     let params = gen_srs(21);
-//     let params_app = {
-//         let mut params = params.clone();
-//         params.downsize(8);
-//         params
-//     };
-
-//     let agg_circuit = AggregationCircuit::new(TESTDATA_HALO2);
-//     let pk = gen_pk(&params, &agg_circuit);
-//     let deployment_code = gen_aggregation_evm_verifier(
-//         &params,
-//         pk.get_vk(),
-//         aggregation::AggregationCircuit::num_instance(),
-//         aggregation::AggregationCircuit::accumulator_indices(),
-//     );
-
-//     let proof = gen_proof::<_, _, EvmTranscript<G1Affine, _, _, _>, EvmTranscript<G1Affine, _, _, _>>(
-//         &params,
-//         &pk,
-//         agg_circuit.clone(),
-//         agg_circuit.instances(),
-//     );
-//     evm_verify(deployment_code, agg_circuit.instances(), proof);
-// }
