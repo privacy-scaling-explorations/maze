@@ -935,8 +935,10 @@ fn main() {
                 "{}",
                 "Warning! Please don't use generated Params in production.".yellow()
             );
+            let now = Instant::now();
             match create_and_save_srs(output_dir, k) {
                 Ok(_) => {
+                    report_elapsed(now);
                     println!("{}", "Success".green());
                 }
                 Err(e) => {
