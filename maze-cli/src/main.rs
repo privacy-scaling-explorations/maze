@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+
 use ethereum_types::Address;
 use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder, RawCallResult};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
@@ -42,10 +43,10 @@ use plonk_verifier::{
     },
     pcs::{
         kzg::{
-            Bdfg21, Kzg, KzgAccumulator, KzgAs, KzgAsProvingKey, KzgAsVerifyingKey,
+            Gwc19, Kzg, KzgAccumulator, KzgAs, KzgAsProvingKey, KzgAsVerifyingKey,
             KzgSuccinctVerifyingKey, LimbsEncoding,
         },
-        AccumulationScheme, AccumulationSchemeProver,
+        AccumulationScheme, AccumulationSchemeProver, Decider,
     },
     system::{
         self,
@@ -59,6 +60,7 @@ use plonk_verifier::{
 use rand::{rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::{
+    fs,
     io::{Cursor, Write},
     iter,
     path::PathBuf,
@@ -73,7 +75,7 @@ const RATE: usize = 16;
 const R_F: usize = 8;
 const R_P: usize = 10;
 
-type Pcs = Kzg<Bn256, Bdfg21>;
+type Pcs = Kzg<Bn256, Gwc19>;
 type Svk = KzgSuccinctVerifyingKey<G1Affine>;
 type As = KzgAs<Pcs>;
 type AsPk = KzgAsProvingKey<G1Affine>;
@@ -236,7 +238,7 @@ impl Accumulation {
             })
             .collect_vec();
 
-        let as_pk = AsPk::new(Some((params.get_g()[0], params.get_g()[1])));
+        let as_pk = AsPk::new(Some(vk.apk().into()));
         let (accumulator, as_proof) = if accumulators.len() > 1 {
             let mut transcript = PoseidonTranscript::<NativeLoader, _, _>::new(Vec::new());
             let accumulator = As::create_proof(
@@ -250,6 +252,8 @@ impl Accumulation {
         } else {
             (accumulators.pop().unwrap(), Value::unknown())
         };
+
+        assert!(Pcs::decide(&vk.dk().into(), accumulator.clone()));
 
         let KzgAccumulator { lhs, rhs } = accumulator;
         let instances = [lhs.x, lhs.y, rhs.x, rhs.y]
@@ -876,13 +880,8 @@ fn main() {
             >(&params, &pk, circuit.clone(), circuit.instances());
             report_elapsed(now);
 
-            for i in [
-                ("proof", proof.clone()),
-                (
-                    "evm-calldata",
-                    encode_calldata(&circuit.instances(), &proof),
-                ),
-            ] {
+            let calldata = encode_calldata(&circuit.instances(), &proof);
+            for i in [("proof", proof.clone()), ("evm-calldata", calldata.clone())] {
                 let mut file_path = output_dir.clone();
                 file_path.extend(vec![format!("halo2-agg-{}.txt", i.0)]);
                 match std::fs::File::create(file_path.clone())
@@ -929,6 +928,9 @@ fn main() {
                     println!("{}", e.to_string().red());
                 }
             }
+
+            println!("{}", format!("Calldata (in bytes):").blue().bold());
+            println!("{}", format!("{:?}", calldata).white().bold());
         }
         Some(Commands::CreateParams { k, output_dir }) => {
             println!(
@@ -954,4 +956,14 @@ fn main() {
     };
 
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    // use super::*;
+
+    // fn accumulation() {
+    // let vk =
+    // Accumulation::new(params, vk, public_signals, proofs)
+    // }
 }
