@@ -60,7 +60,6 @@ use plonk_verifier::{
 use rand::{rngs::OsRng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use std::{
-    fs,
     io::{Cursor, Write},
     iter,
     path::PathBuf,
@@ -194,7 +193,7 @@ pub fn accumulate<'a>(
         })
         .collect_vec();
 
-    let acccumulator = if accumulators.len() > 1 {
+    let accumulator = if accumulators.len() > 1 {
         let mut transcript = PoseidonTranscript::<Rc<Halo2Loader>, _, _>::new(loader, as_proof);
         let proof = As::read_proof(as_vk, &accumulators, &mut transcript).unwrap();
         As::verify(as_vk, &accumulators, &proof).unwrap()
@@ -202,7 +201,7 @@ pub fn accumulate<'a>(
         accumulators.pop().unwrap()
     };
 
-    acccumulator
+    accumulator
 }
 
 #[derive(Clone)]
@@ -216,7 +215,6 @@ struct Accumulation {
 
 impl Accumulation {
     pub fn new(
-        params: ParamsKZG<Bn256>,
         vk: VerifyingKey<Bn256>,
         public_signals: Vec<PublicSignals<Fr>>,
         proofs: Vec<Proof<Bn256>>,
@@ -469,10 +467,7 @@ fn evm_verify(
     let verifier = evm.deploy(caller, deployment_code.into(), 0.into(), None)?;
     match evm.call_raw(caller, verifier.address, calldata.into(), 0.into()) {
         Ok(result) => Ok(result),
-        Err(e) => {
-            println!("{}", e);
-            Err(anyhow::anyhow!("EVM verification failed!"))
-        }
+        Err(e) => Err(anyhow::anyhow!(e.to_string())),
     }
 }
 
@@ -646,20 +641,16 @@ fn main() {
             proof_count,
             output_dir,
         }) => {
-            println!("{}", "Reading parameters for the circuit".white().bold());
-            let now = Instant::now();
-            let params = match prepare_params(params) {
-                Ok(params) => params,
-                Err(e) => {
-                    println!("{}", e.to_string().red());
-                    std::process::exit(1);
+            println!("{}", "Reading circom-plonk verification key".white().bold());
+            let circom_vk = {
+                match prepare_circom_vk(verification_key) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("{}", format!("{:#?}", e).red());
+                        std::process::exit(1);
+                    }
                 }
             };
-            report_elapsed(now);
-            println!();
-
-            println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = prepare_circom_vk(verification_key).unwrap();
             println!();
 
             println!(
@@ -668,12 +659,19 @@ fn main() {
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) = prepare_circom_inputs(input_dir, proof_count).unwrap();
+            let (proofs, public_signals) = {
+                match prepare_circom_inputs(input_dir.clone(), proof_count) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("{}", format!("{:#?}", e).red());
+                        std::process::exit(1);
+                    }
+                }
+            };
             println!();
 
             println!("{}", "Building aggregation circuit".white().bold());
-            let circuit =
-                Accumulation::new(params.clone(), circom_vk.clone(), public_signals, proofs);
+            let circuit = Accumulation::new(circom_vk.clone(), public_signals, proofs);
             println!();
 
             // mock proving circuit
@@ -697,6 +695,21 @@ fn main() {
                     println!("{}", e.to_string().red());
                 }
             }
+            report_elapsed(now);
+            println!();
+
+            println!(
+                "{}",
+                "Reading parameters for commitment scheme".white().bold()
+            );
+            let now = Instant::now();
+            let params = match prepare_params(params) {
+                Ok(params) => params,
+                Err(e) => {
+                    println!("{}", e.to_string().red());
+                    std::process::exit(1);
+                }
+            };
             report_elapsed(now);
             println!();
 
@@ -753,10 +766,16 @@ fn main() {
             proof_count,
             k,
         }) => {
-            let mock_params = gen_srs(1);
-
             println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = prepare_circom_vk(verification_key).unwrap();
+            let circom_vk = {
+                match prepare_circom_vk(verification_key) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("{}", format!("{:#?}", e).red());
+                        std::process::exit(1);
+                    }
+                }
+            };
             println!();
 
             println!(
@@ -765,12 +784,19 @@ fn main() {
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) =
-                prepare_circom_inputs(input_dir.clone(), proof_count).unwrap();
+            let (proofs, public_signals) = {
+                match prepare_circom_inputs(input_dir.clone(), proof_count) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("{}", format!("{:#?}", e).red());
+                        std::process::exit(1);
+                    }
+                }
+            };
             println!();
 
             println!("{}", "Building aggregation circuit".white().bold());
-            let circuit = Accumulation::new(mock_params, circom_vk.clone(), public_signals, proofs);
+            let circuit = Accumulation::new(circom_vk.clone(), public_signals, proofs);
             println!();
 
             // mock proving circuit
@@ -783,7 +809,9 @@ fn main() {
                 .with_context(|| "Mock prover failed")
             {
                 Ok(mock_prover) => match mock_prover.verify() {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        println!("{}", "Success".green());
+                    }
                     Err(errs) => {
                         println!("{}", "Mock prover failed with errors:".red());
                         errs.iter()
@@ -791,11 +819,10 @@ fn main() {
                     }
                 },
                 Err(e) => {
-                    println!("{}", e.to_string().red());
+                    println!("{}", format!("{:#?}", e).red());
                 }
             }
             report_elapsed(now);
-            println!("{}", "Success".green());
         }
         Some(Commands::CreateProof {
             verification_key,
@@ -804,20 +831,16 @@ fn main() {
             proof_count,
             output_dir,
         }) => {
-            println!("{}", "Reading parameters for the circuit".white().bold());
-            let now = Instant::now();
-            let params = match prepare_params(params) {
-                Ok(params) => params,
-                Err(e) => {
-                    println!("{}", e.to_string().red());
-                    std::process::exit(1);
+            println!("{}", "Reading circom-plonk verification key".white().bold());
+            let circom_vk = {
+                match prepare_circom_vk(verification_key) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("{}", format!("{:#?}", e).red());
+                        std::process::exit(1);
+                    }
                 }
             };
-            report_elapsed(now);
-            println!();
-
-            println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = prepare_circom_vk(verification_key).unwrap();
             println!();
 
             println!(
@@ -826,12 +849,31 @@ fn main() {
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) = prepare_circom_inputs(input_dir, proof_count).unwrap();
+            let (proofs, public_signals) = {
+                match prepare_circom_inputs(input_dir.clone(), proof_count) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("{}", format!("{:#?}", e).red());
+                        std::process::exit(1);
+                    }
+                }
+            };
+            println!();
+
+            println!("{}", "Reading parameters for the circuit".white().bold());
+            let now = Instant::now();
+            let params = match prepare_params(params) {
+                Ok(params) => params,
+                Err(e) => {
+                    println!("{}", format!("{:#?}", e).red());
+                    std::process::exit(1);
+                }
+            };
+            report_elapsed(now);
             println!();
 
             println!("{}", "Building aggregation circuit".white().bold());
-            let circuit =
-                Accumulation::new(params.clone(), circom_vk.clone(), public_signals, proofs);
+            let circuit = Accumulation::new(circom_vk.clone(), public_signals, proofs);
             println!();
 
             // Make sure output_dir is accessible and can create
@@ -859,7 +901,7 @@ fn main() {
                 }) {
                 Ok(_) => {}
                 Err(e) => {
-                    println!("{}", e);
+                    println!("{}", format!("{:#?}", e).red());
                     std::process::exit(1);
                 }
             }
@@ -898,7 +940,7 @@ fn main() {
                     }) {
                     Ok(_) => {}
                     Err(e) => {
-                        println!("{}", e.to_string().red());
+                        println!("{}", format!("{:#?}", e).red());
                     }
                 }
             }
@@ -914,7 +956,7 @@ fn main() {
                 Accumulation::accumulator_indices(),
             );
             match evm_verify(evm_bytecode, circuit.instances(), proof)
-                .with_context(|| "Evm verification failed")
+                .with_context(|| "Simulating evm verification failed")
             {
                 Ok(result) => {
                     println!("{}", format!("Gas used: {}", result.gas_used).blue());
@@ -925,9 +967,10 @@ fn main() {
                     }
                 }
                 Err(e) => {
-                    println!("{}", e.to_string().red());
+                    println!("{}", format!("{:#?}", e).red());
                 }
             }
+            println!();
 
             println!("{}", format!("Calldata (in bytes):").blue().bold());
             println!("{}", format!("{:?}", calldata).white().bold());
