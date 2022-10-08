@@ -541,42 +541,18 @@ fn prepare_circom_vk(path: PathBuf) -> anyhow::Result<VerifyingKey<Bn256>> {
     Ok(vk)
 }
 
-fn prepare_circom_inputs(
-    path: PathBuf,
-    count: usize,
-) -> anyhow::Result<(Vec<Proof<Bn256>>, Vec<PublicSignals<Fr>>)> {
-    let mut proofs: Vec<Proof<Bn256>> = vec![];
-    let mut public_signals: Vec<PublicSignals<Fr>> = vec![];
+fn prepare_proofs(path: PathBuf) -> anyhow::Result<Vec<Proof<Bn256>>> {
+    let str = std::fs::read_to_string(path.clone())
+        .with_context(|| format!("Failed to locate {}", path.to_str().unwrap()))?;
+    let proofs = serde_json::from_str::<Vec<Proof<Bn256>>>(&str)?;
+    Ok(proofs)
+}
 
-    for i in 0..count {
-        let mut proof = path.clone();
-        proof.extend(vec![format!("proof{}.json", i + 1)]);
-        let proof = std::fs::read_to_string(proof.clone()).with_context(|| {
-            format!(
-                "Failed to locate proof{}.json at {}",
-                i + 1,
-                proof.to_str().unwrap()
-            )
-        })?;
-        let proof = serde_json::from_str::<Proof<Bn256>>(&proof)
-            .with_context(|| format!("Malformed proof{}.json", i + 1))?;
-        proofs.push(proof);
-
-        let mut public = path.clone();
-        public.extend(vec![format!("public{}.json", i + 1)]);
-        let public = std::fs::read_to_string(public.clone()).with_context(|| {
-            format!(
-                "Failed to locate public{}.json at {}",
-                i + 1,
-                public.to_str().unwrap()
-            )
-        })?;
-        let public = serde_json::from_str::<PublicSignals<Fr>>(&public)
-            .with_context(|| format!("Malformed public{}.json", i + 1))?;
-        public_signals.push(public);
-    }
-
-    Ok((proofs, public_signals))
+fn prepare_public_signals(path: PathBuf) -> anyhow::Result<Vec<PublicSignals<Fr>>> {
+    let str = std::fs::read_to_string(path.clone())
+        .with_context(|| format!("Failed to locate {}", path.to_str().unwrap()))?;
+    let public_signals = serde_json::from_str::<Vec<PublicSignals<Fr>>>(&str)?;
+    Ok(public_signals)
 }
 
 #[derive(Parser)]
@@ -592,8 +568,8 @@ enum Commands {
     /// Setup mock
     MockSetup {
         verification_key: PathBuf,
-        input_dir: PathBuf,
-        proof_count: usize,
+        proofs: PathBuf,
+        public_signals: PathBuf,
 
         #[arg(default_value_t = 21)]
         k: usize,
@@ -602,18 +578,18 @@ enum Commands {
     /// Generates EVM verifier
     GenEvmVerifier {
         verification_key: PathBuf,
-        input_dir: PathBuf,
+        proofs: PathBuf,
+        public_signals: PathBuf,
         params: PathBuf,
-        proof_count: usize,
         output_dir: PathBuf,
     },
 
     /// Create proof
     CreateProof {
         verification_key: PathBuf,
-        input_dir: PathBuf,
+        proofs: PathBuf,
+        public_signals: PathBuf,
         params: PathBuf,
-        proof_count: usize,
         output_dir: PathBuf,
     },
 
@@ -636,14 +612,27 @@ fn main() {
     match cli.command {
         Some(Commands::GenEvmVerifier {
             verification_key,
-            input_dir,
+            proofs,
+            public_signals,
             params,
-            proof_count,
             output_dir,
         }) => {
-            println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = {
-                match prepare_circom_vk(verification_key) {
+            println!(
+                "{}",
+                "Reading circom-plonk verification key, proofs, and public signals"
+                    .white()
+                    .bold()
+            );
+            let ((circom_vk, proofs), public_signals) = {
+                match prepare_circom_vk(verification_key)
+                    .and_then(|prev| {
+                        let proofs = prepare_proofs(proofs)?;
+                        Ok((prev, proofs))
+                    })
+                    .and_then(|prev| {
+                        let ps = prepare_public_signals(public_signals)?;
+                        Ok((prev, ps))
+                    }) {
                     Ok(res) => res,
                     Err(e) => {
                         println!("{}", format!("{:#?}", e).red());
@@ -651,26 +640,15 @@ fn main() {
                     }
                 }
             };
+            assert!(proofs.len() == public_signals.len());
             println!();
 
             println!(
                 "{}",
-                "Reading circom-plonk proofs and public signals"
+                format!("Building aggregation circuit for {} proofs", proofs.len())
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) = {
-                match prepare_circom_inputs(input_dir.clone(), proof_count) {
-                    Ok(res) => res,
-                    Err(e) => {
-                        println!("{}", format!("{:#?}", e).red());
-                        std::process::exit(1);
-                    }
-                }
-            };
-            println!();
-
-            println!("{}", "Building aggregation circuit".white().bold());
             let circuit = Accumulation::new(circom_vk.clone(), public_signals, proofs);
             println!();
 
@@ -762,13 +740,26 @@ fn main() {
         }
         Some(Commands::MockSetup {
             verification_key,
-            input_dir,
-            proof_count,
+            proofs,
+            public_signals,
             k,
         }) => {
-            println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = {
-                match prepare_circom_vk(verification_key) {
+            println!(
+                "{}",
+                "Reading circom-plonk verification key, proofs, and public signals"
+                    .white()
+                    .bold()
+            );
+            let ((circom_vk, proofs), public_signals) = {
+                match prepare_circom_vk(verification_key)
+                    .and_then(|prev| {
+                        let proofs = prepare_proofs(proofs)?;
+                        Ok((prev, proofs))
+                    })
+                    .and_then(|prev| {
+                        let ps = prepare_public_signals(public_signals)?;
+                        Ok((prev, ps))
+                    }) {
                     Ok(res) => res,
                     Err(e) => {
                         println!("{}", format!("{:#?}", e).red());
@@ -776,26 +767,15 @@ fn main() {
                     }
                 }
             };
+            assert!(proofs.len() == public_signals.len());
             println!();
 
             println!(
                 "{}",
-                "Reading circom-plonk proofs and public signals"
+                format!("Building aggregation circuit for {} proofs", proofs.len())
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) = {
-                match prepare_circom_inputs(input_dir.clone(), proof_count) {
-                    Ok(res) => res,
-                    Err(e) => {
-                        println!("{}", format!("{:#?}", e).red());
-                        std::process::exit(1);
-                    }
-                }
-            };
-            println!();
-
-            println!("{}", "Building aggregation circuit".white().bold());
             let circuit = Accumulation::new(circom_vk.clone(), public_signals, proofs);
             println!();
 
@@ -826,31 +806,27 @@ fn main() {
         }
         Some(Commands::CreateProof {
             verification_key,
-            input_dir,
+            proofs,
+            public_signals,
             params,
-            proof_count,
             output_dir,
         }) => {
-            println!("{}", "Reading circom-plonk verification key".white().bold());
-            let circom_vk = {
-                match prepare_circom_vk(verification_key) {
-                    Ok(res) => res,
-                    Err(e) => {
-                        println!("{}", format!("{:#?}", e).red());
-                        std::process::exit(1);
-                    }
-                }
-            };
-            println!();
-
             println!(
                 "{}",
-                "Reading circom-plonk proofs and public signals"
+                "Reading circom-plonk verification key, proofs, and public signals"
                     .white()
                     .bold()
             );
-            let (proofs, public_signals) = {
-                match prepare_circom_inputs(input_dir.clone(), proof_count) {
+            let ((circom_vk, proofs), public_signals) = {
+                match prepare_circom_vk(verification_key)
+                    .and_then(|prev| {
+                        let proofs = prepare_proofs(proofs)?;
+                        Ok((prev, proofs))
+                    })
+                    .and_then(|prev| {
+                        let ps = prepare_public_signals(public_signals)?;
+                        Ok((prev, ps))
+                    }) {
                     Ok(res) => res,
                     Err(e) => {
                         println!("{}", format!("{:#?}", e).red());
@@ -858,6 +834,7 @@ fn main() {
                     }
                 }
             };
+            assert!(proofs.len() == public_signals.len());
             println!();
 
             println!("{}", "Reading parameters for the circuit".white().bold());
@@ -872,7 +849,12 @@ fn main() {
             report_elapsed(now);
             println!();
 
-            println!("{}", "Building aggregation circuit".white().bold());
+            println!(
+                "{}",
+                format!("Building aggregation circuit for {} proofs", proofs.len())
+                    .white()
+                    .bold()
+            );
             let circuit = Accumulation::new(circom_vk.clone(), public_signals, proofs);
             println!();
 
