@@ -378,7 +378,7 @@ fn gen_proof<
     pk: &ProvingKey<G1Affine>,
     circuit: C,
     instances: Vec<Vec<Fr>>,
-) -> Vec<u8> {
+) -> (Vec<u8>, bool) {
     MockProver::run(params.k(), &circuit, instances.clone())
         .unwrap()
         .assert_satisfied();
@@ -414,14 +414,44 @@ fn gen_proof<
             .unwrap(),
         )
     };
-    assert!(accept);
 
-    proof
+    (proof, accept)
+}
+
+fn check_proof<
+    E: EncodedChallenge<G1Affine>,
+    TR: TranscriptReadBuffer<Cursor<Vec<u8>>, G1Affine, E>,
+    TW: TranscriptWriterBuffer<Vec<u8>, G1Affine, E>,
+>(
+    params: &ParamsKZG<Bn256>,
+    vk: &PlonkVerifyingKey<G1Affine>,
+    instances: Vec<Vec<Fr>>,
+    proof: Vec<u8>,
+) -> bool {
+    let instances = instances
+        .iter()
+        .map(|instances| instances.as_slice())
+        .collect_vec();
+    let mut transcript = TR::init(Cursor::new(proof.clone()));
+    VerificationStrategy::<_, VerifierGWC<_>>::finalize(
+        verify_proof::<_, VerifierGWC<_>, _, TR, _>(
+            params.verifier_params(),
+            vk,
+            AccumulatorStrategy::new(params.verifier_params()),
+            &[instances.as_slice()],
+            &mut transcript,
+        )
+        .unwrap(),
+    )
 }
 
 fn gen_pk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> ProvingKey<G1Affine> {
     let vk = keygen_vk(params, circuit).unwrap();
     keygen_pk(params, vk, circuit).unwrap()
+}
+
+fn gen_vk<C: Circuit<Fr>>(params: &ParamsKZG<Bn256>, circuit: &C) -> PlonkVerifyingKey<G1Affine> {
+    keygen_vk(params, circuit).unwrap()
 }
 
 fn gen_aggregation_evm_verifier(
@@ -452,13 +482,7 @@ fn gen_aggregation_evm_verifier(
     loader.deployment_code()
 }
 
-fn evm_verify(
-    deployment_code: Vec<u8>,
-    instances: Vec<Vec<Fr>>,
-    proof: Vec<u8>,
-) -> anyhow::Result<RawCallResult> {
-    let calldata = encode_calldata(&instances, &proof);
-
+fn evm_verify(deployment_code: Vec<u8>, calldata: Vec<u8>) -> anyhow::Result<RawCallResult> {
     let mut evm = ExecutorBuilder::default()
         .with_gas_limit(u64::MAX.into())
         .build(Backend::new(MultiFork::new().0, None));
@@ -593,6 +617,21 @@ enum Commands {
         output_dir: PathBuf,
     },
 
+    /// Verify proof
+    VerifyProof {
+        verification_key: PathBuf,
+        proofs: PathBuf,
+        public_signals: PathBuf,
+        proof_file: PathBuf,
+        params: PathBuf,
+    },
+
+    /// EVM proof verify
+    EvmVerifyProof {
+        calldata: PathBuf,
+        evmbytecode: PathBuf,
+    },
+
     /// Create Params
     CreateParams { k: usize, output_dir: PathBuf },
 }
@@ -712,7 +751,7 @@ fn main() {
                 })
                 .and_then(|_| {
                     let mut file_path = output_dir;
-                    file_path.extend(vec!["evm-verifier.bin"]);
+                    file_path.extend(vec!["evm-verifier.txt"]);
                     std::fs::File::create(file_path.clone())
                         .with_context(|| {
                             format!(
@@ -896,13 +935,18 @@ fn main() {
 
             println!("{}", "Generating proof".white().bold());
             let now = Instant::now();
-            let proof = gen_proof::<
+            let (proof, is_valid) = gen_proof::<
                 _,
                 _,
                 EvmTranscript<G1Affine, _, _, _>,
                 EvmTranscript<G1Affine, _, _, _>,
-            >(&params, &pk, circuit.clone(), circuit.instances());
+            >(
+                &params, &pk, circuit.clone(), circuit.instances()
+            );
             report_elapsed(now);
+            if !is_valid {
+                println!("{}", "Invalid proof generation".red().bold());
+            }
 
             let calldata = encode_calldata(&circuit.instances(), &proof);
             for i in [("proof", proof.clone()), ("evm-calldata", calldata.clone())] {
@@ -937,7 +981,7 @@ fn main() {
                 Accumulation::num_instance(),
                 Accumulation::accumulator_indices(),
             );
-            match evm_verify(evm_bytecode, circuit.instances(), proof)
+            match evm_verify(evm_bytecode, calldata.clone())
                 .with_context(|| "Simulating evm verification failed")
             {
                 Ok(result) => {
@@ -957,6 +1001,90 @@ fn main() {
             println!("{}", format!("Calldata (in bytes):").blue().bold());
             println!("{}", format!("{:?}", calldata).white().bold());
         }
+        Some(Commands::VerifyProof {
+            verification_key,
+            proofs,
+            public_signals,
+            proof_file,
+            params,
+        }) => {
+            println!(
+                "{}",
+                "Reading circom-plonk verification key, proofs, and public signals"
+                    .white()
+                    .bold()
+            );
+            let ((circom_vk, proofs), public_signals) = {
+                match prepare_circom_vk(verification_key)
+                    .and_then(|prev| {
+                        let proofs = prepare_proofs(proofs)?;
+                        Ok((prev, proofs))
+                    })
+                    .and_then(|prev| {
+                        let ps = prepare_public_signals(public_signals)?;
+                        Ok((prev, ps))
+                    }) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("{}", format!("{:#?}", e).red());
+                        std::process::exit(1);
+                    }
+                }
+            };
+            assert!(proofs.len() == public_signals.len());
+
+            let agg_proof = match std::fs::read_to_string(proof_file.clone())
+                .with_context(|| format!("Failed to locate {}", proof_file.to_str().unwrap()))
+                .and_then(|proof| {
+                    let proof = serde_json::from_str::<Vec<u8>>(&proof)?;
+                    Ok(proof)
+                }) {
+                Ok(proof) => proof,
+                Err(e) => {
+                    println!("{}", format!("{:#?}", e).red());
+                    std::process::exit(1);
+                }
+            };
+
+            println!("{}", "Reading parameters for the circuit".white().bold());
+            let now = Instant::now();
+            let params = match prepare_params(params) {
+                Ok(params) => params,
+                Err(e) => {
+                    println!("{}", format!("{:#?}", e).red());
+                    std::process::exit(1);
+                }
+            };
+            report_elapsed(now);
+            println!();
+
+            println!(
+                "{}",
+                format!("Building aggregation circuit for {} proofs", proofs.len())
+                    .white()
+                    .bold()
+            );
+            let circuit = Accumulation::new(circom_vk.clone(), public_signals, proofs);
+            println!();
+
+            println!("{}", "Generating verification key".white().bold());
+            let now = Instant::now();
+            let vk = gen_vk(&params, &circuit);
+            report_elapsed(now);
+            println!();
+
+            if check_proof::<_, EvmTranscript<G1Affine, _, _, _>, EvmTranscript<G1Affine, _, _, _>>(
+                &params,
+                &vk,
+                circuit.instances(),
+                agg_proof,
+            ) {
+                println!("{}", "Verification success".green())
+            } else {
+                println!("{}", "Verification failed".red())
+            }
+        }
+
         Some(Commands::CreateParams { k, output_dir }) => {
             println!(
                 "{}",
@@ -971,6 +1099,49 @@ fn main() {
                 Err(e) => {
                     println!("{}", e.to_string().red());
                     std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::EvmVerifyProof {
+            calldata,
+            evmbytecode,
+        }) => {
+            let (calldata, bytecode) = match std::fs::read_to_string(calldata.clone())
+                .with_context(|| format!("Failed to locate {}", calldata.to_str().unwrap()))
+                .and_then(|calldata| {
+                    let bytecode =
+                        std::fs::read_to_string(evmbytecode.clone()).with_context(|| {
+                            format!("Failed to locate {}", evmbytecode.to_str().unwrap())
+                        })?;
+                    Ok((calldata, bytecode))
+                })
+                .and_then(|(calldata, bytecode)| {
+                    let calldata = serde_json::from_str::<Vec<u8>>(&calldata)
+                        .with_context(|| "Failed to parse calldata")?;
+                    let bytecode = serde_json::from_str::<Vec<u8>>(&bytecode)
+                        .with_context(|| "Failed to parse evm bytecode")?;
+                    Ok((calldata, bytecode))
+                }) {
+                Ok(res) => res,
+                Err(e) => {
+                    println!("{}", format!("{:#?}", e).red());
+                    std::process::exit(1);
+                }
+            };
+
+            match evm_verify(bytecode, calldata)
+                .with_context(|| "Simulating evm verification failed")
+            {
+                Ok(result) => {
+                    println!("{}", format!("Gas used: {}", result.gas_used).blue());
+                    if result.reverted {
+                        println!("{}", "Verification failed".red())
+                    } else {
+                        println!("{}", "Verification success".green())
+                    }
+                }
+                Err(e) => {
+                    println!("{}", format!("{:#?}", e).red());
                 }
             }
         }
