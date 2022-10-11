@@ -2284,7 +2284,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "maze-cli"
+name = "maze"
 version = "0.1.0"
 dependencies = [
  "anyhow",

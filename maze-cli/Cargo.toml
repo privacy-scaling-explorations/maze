@@ -1,10 +1,10 @@
 [package]
-name = "maze-cli"
+name = "maze"
 version = "0.1.0"
 authors = ["Janmajaya Mall <janmajayamall@protonmail.com>"]
 edition = "2021"
 license = "MIT"
-description = "CLI tool to aggregate circom-plonk proofs"
+description = "Tool to aggregate snarkjs circom plonk proofs"
 readme = "README.md"
 keywords = ["aggregation", "plonk", "halo2", "circom"]
 
@@ -32,6 +32,7 @@ plonk_verifier = {git = "https://github.com/Janmajayamall/plonk-verifier.git", b
 halo2_curves = { git = "https://github.com/privacy-scaling-explorations/halo2curves", tag = "0.2.1", package = "halo2curves" }
 
 halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2", tag = "v2022_09_10" }
+
 
 halo2_wrong_ecc = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2022_09_09", package = "ecc" }
 halo2_wrong_transcript = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2022_09_09", package = "transcript"}

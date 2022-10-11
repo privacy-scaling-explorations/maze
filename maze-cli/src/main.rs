@@ -66,6 +66,9 @@ use std::{
     rc::Rc,
     time::Instant,
 };
+use utils::{Dimension, DimensionMeasurement};
+
+mod utils;
 
 const LIMBS: usize = 4;
 const BITS: usize = 68;
@@ -594,9 +597,6 @@ enum Commands {
         verification_key: PathBuf,
         proofs: PathBuf,
         public_signals: PathBuf,
-
-        #[arg(default_value_t = 21)]
-        k: usize,
     },
 
     /// Generates EVM verifier
@@ -634,6 +634,10 @@ enum Commands {
 
     /// Create Params
     CreateParams { k: usize, output_dir: PathBuf },
+}
+
+fn measure_k(dimension: &Dimension) {
+    dimension.instance
 }
 
 fn report_elapsed(now: Instant) {
@@ -781,7 +785,6 @@ fn main() {
             verification_key,
             proofs,
             public_signals,
-            k,
         }) => {
             println!(
                 "{}",
@@ -824,7 +827,8 @@ fn main() {
                 "Running mock prover for aggregation circuit".white().bold()
             );
             let now = Instant::now();
-            match MockProver::run(k as u32, &circuit, vec![circuit.instances.clone()])
+            let dimension = DimensionMeasurement::measure(&circuit).unwrap();
+            match MockProver::run(dimension.k(), &circuit, vec![circuit.instances.clone()])
                 .with_context(|| "Mock prover failed")
             {
                 Ok(mock_prover) => match mock_prover.verify() {
@@ -842,6 +846,8 @@ fn main() {
                 }
             }
             report_elapsed(now);
+
+            
         }
         Some(Commands::CreateProof {
             verification_key,
