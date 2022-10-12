@@ -36,8 +36,9 @@ use halo2_wrong_ecc::{
 use halo2_wrong_transcript::NativeRepresentation;
 use itertools::Itertools;
 use plonk_verifier::{
+    cost::{Cost, CostEstimation},
     loader::{
-        evm::{encode_calldata, EvmLoader},
+        evm::{encode_calldata, estimate_gas, EvmLoader},
         halo2::{self},
         native::NativeLoader,
     },
@@ -475,6 +476,8 @@ fn gen_aggregation_evm_verifier(
             .with_accumulator_indices(accumulator_indices),
     );
 
+    verifier::Plonk::<Kzg<Bn256, Gwc19>>::estimate_cost(&protocol);
+
     let loader = EvmLoader::new::<Fq, Fr>();
     let mut transcript = EvmTranscript::<_, Rc<EvmLoader>, _, _>::new(loader.clone());
 
@@ -634,10 +637,6 @@ enum Commands {
 
     /// Create Params
     CreateParams { k: usize, output_dir: PathBuf },
-}
-
-fn measure_k(dimension: &Dimension) {
-    dimension.instance
 }
 
 fn report_elapsed(now: Instant) {
@@ -833,21 +832,20 @@ fn main() {
             {
                 Ok(mock_prover) => match mock_prover.verify() {
                     Ok(_) => {
-                        println!("{}", "Success".green());
+                        println!("{}", "Success".green().bold());
                     }
                     Err(errs) => {
-                        println!("{}", "Mock prover failed with errors:".red());
+                        println!("{}", "Mock prover failed with errors:".red().bold());
                         errs.iter()
-                            .for_each(|e| println!("{}", e.to_string().red()));
+                            .for_each(|e| println!("{}", e.to_string().red().bold()));
                     }
                 },
                 Err(e) => {
-                    println!("{}", format!("{:#?}", e).red());
+                    println!("{}", format!("{:#?}", e).red().bold());
                 }
             }
+            println!("{}", format!("k:{}", dimension.k()).blue().bold());
             report_elapsed(now);
-
-            
         }
         Some(Commands::CreateProof {
             verification_key,
