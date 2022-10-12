@@ -6,9 +6,9 @@ That means using Maze you can take a bunch of plonk proofs that you generate usi
 
 ## Getting started
 
-### Install [this fork](https://github.com/Janmajayamall/snarkjs) Snarkjs
+### Install [this fork](https://github.com/Janmajayamall/snarkjs) of Snarkjs
 
-> Warning: this will override existing installation of snarkjs on your system.
+> WARNING: this will override existing installation of snarkjs on your system.
 
 ```sh
 git clone https://github.com/Janmajayamall/snarkjs
@@ -40,9 +40,9 @@ You can check correctness of installation by running
 maze --help
 ```
 
-## How to
+## How to use
 
-Maze can build aggregation circuit to aggregate a pre-defined number of plonk-proofs. To generate individual plonk proofs for a circuit on different inputs we use [fork of snarkjs](https://github.com/Janmajayamall/snarkjs) we installed [above](). After which we use maze tool to necessary commands.
+Maze can build aggregation circuit to aggregate a pre-defined number of plonk-proofs. To generate individual plonk proofs for a circuit on different inputs we use [fork of snarkjs](https://github.com/Janmajayamall/snarkjs) we installed above. After which we use maze tool to necessary commands.
 
 ### 1. Create circuit
 
@@ -79,7 +79,7 @@ The command above downloads and save `powersOfTau28_hez_final_15.ptau` as `hez_1
 
 You can instead choose to download a file with different max. constraints.
 
-> `tau` value used for commitment scheme in individual plonk proofs must be same as the one used in commitment scheme of aggregation circuit.
+> Note that `tau` value used in `common reference string (CRS)` of commitment scheme in individual plonk proofs must be same as the one used in commitment scheme of aggregation circuit.
 
 ### 3. Run plonk setup
 
@@ -130,7 +130,7 @@ maze mock-setup verification_key.json proofs.json public_signals.json
 Mock setup does the following
 
 -   builds an aggregation circuit for the circom circuit with plonk verification key as `verification_key.json`. The maximum number of proofs that you can aggregate with this aggregation circuit equals number of proofs in `proofs.json`.
--   runs [mock prover]() on the aggregation circuit to check that all constraints satisfy.
+-   runs [mock prover](https://docs.rs/halo2_proofs/0.2.0/halo2_proofs/dev/struct.MockProver.html) on the aggregation circuit to check that all constraints satisfy.
 -   Outputs `k`. `2^k` are the maximum number of rows your circuit needs, thus your CRS must of degree `2^k`.
 
 ### 7. Maze gen-evm-verifier
@@ -141,7 +141,7 @@ maze gen-evm-verifier verification_key.json proofs.json public_signals.json hez_
 
 `hez_22.srs` contains same CRS as `powersOfTau28_hez_final_22.ptau`. You can either use `.srs` or `.ptau` as `PARAMS`, but `.srs` files are smaller in size than `.ptau` files thus faster to read in memory.
 
-Notice that we are using CRS file for k = 22, since aggregation circuit consists of more constraints.
+Notice that we are using CRS file for k = 22.
 
 `gen-evm-verifier` generates evm verifier bytecode for the aggregation circuit and stores it inside `outputs` directory.
 
@@ -156,29 +156,49 @@ maze create-proof verification_key.json proofs.json public_signals.json hez_22.s
 `create_proof` creates two files
 
 -   `halo2-agg-proof.txt`: Contains only the proof in bytes of the aggregation circuit.
--   `halo2-agg-evm-calldata.txt`: Contains proof of aggregation circuit and instance values in bytes encoded as calldata input to evm verifier.
+-   `halo2-agg-evm-calldata.txt`: Contains proof of aggregation circuit and instance values in bytes encoded as calldata input to evm verifier contract.
 
 ### 9. Maze verify-proof
 
+```sh
+maze verify-proof verification_key.json proofs.json public_signals.json outputs/halo2-agg-proof.txt hez_22.srs
+```
+
+`verify-proof` verifies the aggregated proof (stored in `halo2-agg-proof.txt`) generated using `create-proof`
+
+### 10. Maze evm-verify-proof
+
+```sh
+maze evm-verify-proof outputs/halo2-agg-evm-calldata.txt outputs/evm-verifier.txt
+```
+
+`evm-verify-proof` simulates execution of EVM bytecode in `evm-verifier.txt` with calldata in `halo2-agg-evm-calldata.txt`.
+
 An aggregation circuit aggregates pre-defined number of individual proofs to produce an aggregated proof. In the following steps we use Circuit A. We first generate 3 plonk proofs on 3 different inputs for Circuit A using snarkjs. We then use maze tool to build an aggregation circuit and try out different commands available.
 
-1. Perform plonk setup to product zkey
-2. create inputs file
-3. plonk setup maze to product necessary files
+## FAQs
 
-    To build the aggregation circuit we require 3 files
-    (a) verification_key.json - plonk verification key of circuit A
-    (b) proofs.json - contains `n` proofs.
-    (c) publics.json - contains public signals correspoding to proofs
-    (d) SRS/ptau file for aggregation circuit.
+### 1. .ptau and .srs files
 
-    Note: tau used for SRS in aggregation circuit must be same as one used to generate plonk proofs using snarkjs. For more details read here.
+.ptau and .srs are both file formats for storing CRS. .srs files are smaller in size than .ptau file. You can convert .ptau file to .srs file using this [repo](https://github.com/han0110/halo2-kzg-srs).
 
-4. maze mock-setup
-5. maze gen-evm-verifier
-6. maze jdiwadjiawd
+<!-- You can also find  -->
 
-7. What is mock prover
-8. How to choose k?
-9. SRS vs Ptau
-10.
+### 2. How expensive is proof aggregation ?
+
+Machine used:
+
+| individual circuit | aggregation circuit | no. of proofs | proving time (in seconds) | peak RAM (GB) | machine used              |
+| ------------------ | ------------------- | ------------- | ------------------------- | ------------- | ------------------------- |
+| PI = 1; k = 15     | k = 24              | 25            | 1621                      | 107 GB        | r5a.16xlarge ec2 instance |
+| PI = 1; k = 15     | k = 25              | 50            | 3422                      | 214 GB        | r5a.16xlarge ec2 instance |
+
+## Contact
+
+Join our [telegram](https://t.me/+sysPCS8ImyI4YzI1) group for questions and discussions.
+
+## Acknowledgements
+
+-   [Han](https://github.com/han0110): For implementing [plonk-verifier](https://github.com/privacy-scaling-explorations/plonk-verifier) that maze heavily uses for building aggregation circuits. Also, for their discussions around several implementation details.
+-   [PSE zKEVM team](https://github.com/privacy-scaling-explorations/halo2wrong): For implementing [halo2wrong](https://github.com/privacy-scaling-explorations/halo2wrong) and fork of [halo2](https://github.com/privacy-scaling-explorations/halo2) that replaces IPA commitment scheme with KZG.
+-   [Halo2 team](https://github.com/zcash/halo2): For implementing [Halo2](https://github.com/zcash/halo2) library without which developing aggregation circuits will a lot harder.
