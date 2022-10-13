@@ -36,9 +36,9 @@ use halo2_wrong_ecc::{
 use halo2_wrong_transcript::NativeRepresentation;
 use itertools::Itertools;
 use plonk_verifier::{
-    cost::{Cost, CostEstimation},
+    cost::CostEstimation,
     loader::{
-        evm::{encode_calldata, estimate_gas, EvmLoader},
+        evm::{encode_calldata, EvmLoader},
         halo2::{self},
         native::NativeLoader,
     },
@@ -67,7 +67,7 @@ use std::{
     rc::Rc,
     time::Instant,
 };
-use utils::{Dimension, DimensionMeasurement};
+use utils::DimensionMeasurement;
 
 mod utils;
 
@@ -1088,7 +1088,6 @@ fn main() {
                 println!("{}", "Verification failed".red())
             }
         }
-
         Some(Commands::CreateParams { k, output_dir }) => {
             println!(
                 "{}",
@@ -1149,10 +1148,7 @@ fn main() {
                 }
             }
         }
-        _ => {
-            println!("{}", "Invalid command".red());
-            std::process::exit(1);
-        }
+        None => {}
     };
 
     std::process::exit(0);

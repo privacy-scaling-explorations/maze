@@ -8,7 +8,7 @@ That means using Maze you can take a bunch of plonk proofs that you generate usi
 
 ### Install [this fork](https://github.com/Janmajayamall/snarkjs) of Snarkjs
 
-> WARNING: this will override existing installation of snarkjs on your system.
+> **Note:** this will override existing installation of [snarkjs](https://github.com/iden3/snarkjs) on your system.
 
 ```sh
 git clone https://github.com/Janmajayamall/snarkjs
@@ -141,7 +141,7 @@ maze gen-evm-verifier verification_key.json proofs.json public_signals.json hez_
 
 `hez_22.srs` contains same CRS as `powersOfTau28_hez_final_22.ptau`. You can either use `.srs` or `.ptau` as `PARAMS`, but `.srs` files are smaller in size than `.ptau` files thus faster to read in memory.
 
-Notice that we are using CRS file for k = 22.
+Notice that we are using CRS file of k = 22.
 
 `gen-evm-verifier` generates evm verifier bytecode for the aggregation circuit and stores it inside `outputs` directory.
 
@@ -173,8 +173,6 @@ maze evm-verify-proof outputs/halo2-agg-evm-calldata.txt outputs/evm-verifier.tx
 ```
 
 `evm-verify-proof` simulates execution of EVM bytecode in `evm-verifier.txt` with calldata in `halo2-agg-evm-calldata.txt`.
-
-An aggregation circuit aggregates pre-defined number of individual proofs to produce an aggregated proof. In the following steps we use Circuit A. We first generate 3 plonk proofs on 3 different inputs for Circuit A using snarkjs. We then use maze tool to build an aggregation circuit and try out different commands available.
 
 ## FAQs
 
