@@ -32,7 +32,7 @@ The fork implements two changes to original [snarkjs](https://github.com/iden3/s
 git clone https://github.com/privacy-scaling-explorations/maze
 cd maze/maze-cli
 cargo build
-cargo install .
+cargo install --path .
 ```
 
 You can check correctness of installation by running
