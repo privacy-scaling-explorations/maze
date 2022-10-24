@@ -14,7 +14,8 @@ That means using Maze you can take a bunch of plonk proofs that you generate usi
 git clone https://github.com/Janmajayamall/snarkjs
 cd snarkjs
 npm install
-npm buildcli
+npm run build
+npm run buildcli
 npm install -g .
 ```
 
