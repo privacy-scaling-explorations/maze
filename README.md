@@ -14,7 +14,8 @@ That means using Maze you can take a bunch of plonk proofs that you generate usi
 git clone https://github.com/Janmajayamall/snarkjs
 cd snarkjs
 npm install
-npm buildcli
+npm run build
+npm run buildcli
 npm install -g .
 ```
 
@@ -31,7 +32,7 @@ The fork implements two changes to original [snarkjs](https://github.com/iden3/s
 git clone https://github.com/privacy-scaling-explorations/maze
 cd maze/maze-cli
 cargo build
-cargo install .
+cargo install --path .
 ```
 
 You can check correctness of installation by running
