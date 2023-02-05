@@ -20,10 +20,10 @@ serde_json = { version = "1.0.85" }
 anyhow = { version = "1.0.65" }
 colored = "2.0.0"
 
-ethereum_types = { package = "ethereum-types", version = "0.13.1", default-features = false, features = ["std"]}
+ethereum_types = { package = "ethereum-types", version = "0.14.1", default-features = false, features = ["std"]}
 sha3 = { version = "0.10.1" }
 
-foundry_evm = { git = "https://github.com/foundry-rs/foundry", package = "foundry-evm", rev = "6b1ee60e" }
+foundry_evm = { git = "https://github.com/foundry-rs/foundry", package = "foundry-evm", rev = "e53c0d2338e447bb2468d2c2b183fd21df6b3494" }
 crossterm = { version = "0.22.1" }
 tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
 
@@ -38,7 +38,7 @@ halo2_wrong_ecc = { git = "https://github.com/privacy-scaling-explorations/halo2
 halo2_wrong_transcript = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2022_09_09", package = "transcript"}
 poseidon = { git = "https://github.com/privacy-scaling-explorations/poseidon", branch = "padding" }
 
-halo2_kzg_srs = { git = "https://github.com/han0110/halo2-kzg-srs" }
+halo2_kzg_srs = { git = "https://github.com/han0110/halo2-kzg-srs", rev="ff65429" }
 
 [patch."https://github.com/privacy-scaling-explorations/halo2"]
 halo2_proofs = { git = "https://github.com/han0110/halo2", branch = "feature/configurable-instance-query", package = "halo2_proofs" }

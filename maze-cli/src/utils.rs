@@ -7,10 +7,7 @@ use halo2_proofs::{
         Fixed, FloorPlanner, Instance, Selector,
     },
 };
-use std::{
-    cell::RefCell,
-    ops::{RangeInclusive, Shl},
-};
+use std::{cell::RefCell, ops::RangeInclusive};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dimension {
@@ -33,6 +30,7 @@ impl Dimension {
             - 1
     }
 
+    #[allow(dead_code)]
     pub fn advice_range(&self) -> RangeInclusive<usize> {
         0..=self.advice as usize
     }
