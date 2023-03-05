@@ -39,6 +39,3 @@ halo2_wrong_transcript = { git = "https://github.com/privacy-scaling-exploration
 poseidon = { git = "https://github.com/privacy-scaling-explorations/poseidon", branch = "padding" }
 
 halo2_kzg_srs = { git = "https://github.com/han0110/halo2-kzg-srs", rev="ff65429" }
-
-[patch."https://github.com/privacy-scaling-explorations/halo2"]
-halo2_proofs = { git = "https://github.com/han0110/halo2", branch = "feature/configurable-instance-query", package = "halo2_proofs" }

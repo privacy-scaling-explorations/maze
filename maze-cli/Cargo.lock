@@ -1815,7 +1815,7 @@ dependencies = [
 [[package]]
 name = "halo2_proofs"
 version = "0.2.0"
-source = "git+https://github.com/han0110/halo2?branch=feature/configurable-instance-query#432d72f462ed47ccf5c93b1111afed14c95db52b"
+source = "git+https://github.com/privacy-scaling-explorations/halo2?tag=v2022_09_10#a9e99a72a65d7c98e8a4258c2c94269c834d1c10"
 dependencies = [
  "blake2b_simd",
  "ff",
