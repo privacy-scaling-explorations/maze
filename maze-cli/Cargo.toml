@@ -23,7 +23,7 @@ colored = "2.0.0"
 ethereum_types = { package = "ethereum-types", version = "0.14.1", default-features = false, features = ["std"]}
 sha3 = { version = "0.10.1" }
 
-foundry_evm = { git = "https://github.com/foundry-rs/foundry", package = "foundry-evm", rev = "1d9a34ecfe265d49b4237c9eb670d5aec389b646" }
+foundry_evm = { git = "https://github.com/foundry-rs/foundry", package = "foundry-evm", rev = "6570a4c" }
 crossterm = { version = "0.22.1" }
 tui = { version = "0.16.0", default-features = false, features = ["crossterm"] }
 
