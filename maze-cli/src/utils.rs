@@ -162,7 +162,7 @@ impl<F: FieldExt> Assignment<F> for DimensionMeasurement {
 
     fn pop_namespace(&mut self, _: Option<String>) {}
 
-    fn annotate_column<A, AR>(&mut self, annotation: A, column: Column<Any>)
+    fn annotate_column<A, AR>(&mut self, _annotation: A, _column: Column<Any>)
         where
             A: FnOnce() -> AR,
             AR: Into<String> {

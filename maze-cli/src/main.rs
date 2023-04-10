@@ -6,7 +6,7 @@ use ethereum_types::Address;
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
 use halo2_kzg_srs::{Srs, SrsFormat};
 use halo2_proofs::{
-    circuit::{floor_planner::V1, Layouter, Value},
+    circuit::{Layouter, Value, SimpleFloorPlanner},
     dev::MockProver,
     plonk::{
         self, create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ConstraintSystem,
@@ -47,10 +47,11 @@ use snark_verifier::{
         self, circom::{compile, Proof, PublicSignals, VerifyingKey},
         halo2::{compile as compile_halo2, transcript::evm::EvmTranscript, Config},
     },
-    util::arithmetic::{fe_to_limbs, CurveAffine, FieldExt},
+    util::arithmetic::{fe_to_limbs, FieldExt},
     verifier::{self, SnarkVerifier, plonk::*},
 };
-use rand::{rngs::OsRng};
+use rand::{rngs::OsRng, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use std::{
     io::{Cursor, Write},
     path::PathBuf,
@@ -115,10 +116,10 @@ impl MainGateWithRangeConfig {
         RangeChip::new(self.range_config.clone())
     }
 
-    pub fn ecc_chip<C: CurveAffine, const LIMBS: usize, const BITS: usize>(
+    pub fn ecc_chip(
         &self,
-    ) -> halo2_wrong_ecc::BaseFieldEccChip<C, LIMBS, BITS> {
-        halo2_wrong_ecc::BaseFieldEccChip::new(EccConfig::new(
+    ) -> BaseFieldEccChip {
+        BaseFieldEccChip::new(EccConfig::new(
             self.range_config.clone(),
             self.main_gate_config.clone(),
         ))
@@ -154,6 +155,7 @@ pub fn aggregate<'a>(
     svk: &Svk,
     loader: &Rc<Halo2Loader<'a>>,
     snarks: &[SnarkWitness],
+    as_vk: &KzgAsVerifyingKey,
     as_proof: Value<&'_ [u8]>,
 ) -> KzgAccumulator<G1Affine, Rc<Halo2Loader<'a>>> {
     let assign_instances = |instances: &[Vec<Value<Fr>>]| {
@@ -181,14 +183,14 @@ pub fn aggregate<'a>(
         })
         .collect_vec();
 
-    let acccumulator = {
+    let accumulator = {
         let mut transcript = PoseidonTranscript::<Rc<Halo2Loader>, _>::new(loader, as_proof);
         let proof =
-            As::read_proof(&Default::default(), &accumulators, &mut transcript).unwrap();
-        As::verify(&Default::default(), &accumulators, &proof).unwrap()
+            As::read_proof(as_vk, &accumulators, &mut transcript).unwrap();
+        As::verify(as_vk, &accumulators, &proof).unwrap()
     };
 
-    acccumulator
+    accumulator
 }
 
 #[derive(Clone)]
@@ -196,6 +198,7 @@ struct Accumulation {
     svk: Svk,
     snarks: Vec<SnarkWitness>,
     instances: Vec<Fr>,
+    as_vk: KzgAsVerifyingKey,
     as_proof: Value<Vec<u8>>,
 }
 
@@ -208,7 +211,7 @@ impl Accumulation {
         let protocol = compile(&vk);
         let proofs: Vec<Vec<u8>> = proofs.iter().map(|p| p.to_compressed_le()).collect();
 
-        let accumulators = public_signals
+        let mut accumulators = public_signals
             .iter()
             .zip(proofs.iter())
             .flat_map(|(public_signal, proof)| {
@@ -222,12 +225,19 @@ impl Accumulation {
             })
             .collect_vec();
 
-        let (accumulator, as_proof) = {
+        let as_pk = KzgAsProvingKey::<G1Affine>::new(Some(vk.apk()));
+        let (accumulator, as_proof) = if accumulators.len() > 1 {
             let mut transcript = PoseidonTranscript::<NativeLoader, _>::new(Vec::new());
-            let accumulator =
-                As::create_proof(&Default::default(), &accumulators, &mut transcript, OsRng)
-                    .unwrap();
-            (accumulator, transcript.finalize())
+            let accumulator = As::create_proof(
+                &as_pk,
+                &accumulators,
+                &mut transcript,
+                ChaCha20Rng::from_seed(Default::default()),
+            )
+            .unwrap();
+            (accumulator, Value::known(transcript.finalize()))
+        } else {
+            (accumulators.pop().unwrap(), Value::unknown())
         };
 
         let KzgAccumulator { lhs, rhs } = accumulator;
@@ -251,7 +261,8 @@ impl Accumulation {
                 })
                 .collect(),
             instances,
-            as_proof: Value::known(as_proof),
+            as_vk: as_pk.vk(),
+            as_proof,
         }
     }
 
@@ -274,7 +285,7 @@ impl Accumulation {
 
 impl Circuit<Fr> for Accumulation {
     type Config = MainGateWithRangeConfig;
-    type FloorPlanner = V1;
+    type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
         Self {
@@ -285,6 +296,7 @@ impl Circuit<Fr> for Accumulation {
                 .map(SnarkWitness::without_witnesses)
                 .collect(),
             instances: self.instances.clone(),
+            as_vk: self.as_vk,
             as_proof: Value::unknown(),
         }
     }
@@ -314,7 +326,7 @@ impl Circuit<Fr> for Accumulation {
 
                 let ecc_chip = config.ecc_chip();
                 let loader = Halo2Loader::new(ecc_chip, ctx);
-                let accumulator = aggregate(&self.svk, &loader, &self.snarks, self.as_proof());
+                let accumulator = aggregate(&self.svk, &loader, &self.snarks, &self.as_vk, self.as_proof());
 
                 let accumulator_limbs = [accumulator.lhs, accumulator.rhs]
                     .iter()
