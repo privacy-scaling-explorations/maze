@@ -3,7 +3,6 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 use ethereum_types::Address;
-use foundry_evm::executor::{fork::MultiFork, Backend, ExecutorBuilder, RawCallResult};
 use halo2_curves::bn256::{Bn256, Fq, Fr, G1Affine};
 use halo2_kzg_srs::{Srs, SrsFormat};
 use halo2_proofs::{
@@ -35,6 +34,9 @@ use halo2_wrong_ecc::{
 };
 use halo2_wrong_transcript::NativeRepresentation;
 use itertools::Itertools;
+use snark_verifier::{
+    loader::evm::{ExecutorBuilder, RawCallResult}
+};
 use plonk_verifier::{
     cost::CostEstimation,
     loader::{
@@ -491,14 +493,12 @@ fn gen_aggregation_evm_verifier(
 fn evm_verify(deployment_code: Vec<u8>, calldata: Vec<u8>) -> anyhow::Result<RawCallResult> {
     let mut evm = ExecutorBuilder::default()
         .with_gas_limit(u64::MAX.into())
-        .build(Backend::new(MultiFork::new().0, None));
+        .build();
 
     let caller = Address::from_low_u64_be(0xfe);
-    let verifier = evm.deploy(caller, deployment_code.into(), 0.into(), None)?;
-    match evm.call_raw(caller, verifier.address, calldata.into(), 0.into()) {
-        Ok(result) => Ok(result),
-        Err(e) => Err(anyhow::anyhow!(e.to_string())),
-    }
+    let verifier = evm.deploy(caller, deployment_code.into(), 0.into()).address.unwrap();
+
+    Ok(evm.call_raw(caller, verifier, calldata.into(), 0.into()))
 }
 
 fn prepare_params(path: PathBuf) -> anyhow::Result<ParamsKZG<Bn256>> {
